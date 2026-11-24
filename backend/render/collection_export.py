@@ -8,8 +8,12 @@ PDF); the ZIP is assembled from those PNG files afterwards, so memory stays
 at about one page image whatever the collection's length.
 
 Generated pages are ordinary page dicts drawn by the shared renderer and
-fonts (titles in font family "title" when data/fonts has one). Their images
-(thumbnail, cover art) are pre-rendered pages handed to the renderer through
+fonts (titles in font family "title" when data/fonts has one), sized like the
+first episode's first page; their font sizes and borders are given for a
+600 px page and scaled by width / 600 (Comics imports are 1650 px wide). The
+cover shows the chosen page's largest picture without its lettering, or the
+whole page when it has no picture. Pre-rendered images (the title page
+thumbnail, the cover of a page without a picture) reach the renderer through
 a resolver wrapper under THUMB_PREFIX refs.
 """
 import logging
@@ -103,6 +107,19 @@ def _render_scaled(page: Dict[str, Any], target_w_px: float, resolve) -> Image.I
     return render_page(page, max(0.05, min(8.0, target_w_px / pw)), resolve)
 
 
+def _cover_art(page: Dict[str, Any]) -> Optional[str]:
+    """src of the page's largest panel picture, so the cover shows the art
+    without the page's balloons and captions; None when it has none."""
+    best, area = None, 0.0
+    for el in page.get("elements") or []:
+        if el.get("type") in ("image", "page-image") and el.get("src") \
+                and el.get("visible", True):
+            a = float(el.get("width") or 0) * float(el.get("height") or 0)
+            if a > area:
+                best, area = el["src"], a
+    return best
+
+
 def _cover_page(collection: Dict[str, Any], episodes: List[Dict[str, Any]],
                 W: int, H: int, scale: float, resolve) -> Tuple[Dict[str, Any], Dict[str, Image.Image]]:
     art_page = None
@@ -113,15 +130,19 @@ def _cover_page(collection: Dict[str, Any], episodes: List[Dict[str, Any]],
                         ep["pages"][0])
     if art_page is None:
         art_page = episodes[0]["pages"][0]
-    ref = THUMB_PREFIX + "cover"
-    art = _render_scaled(art_page, W * scale, resolve)
+    k = W / DEFAULT_W
+    images: Dict[str, Image.Image] = {}
+    ref = _cover_art(art_page)
+    if ref is None:   # no picture on the page: the whole rendered page
+        ref = THUMB_PREFIX + "cover"
+        images[ref] = _render_scaled(art_page, W * scale, resolve)
     els = [_image(ref, 0, 0, 100, 100, 0),
-           _text(collection.get("name") or "", 6, 16, 56, family="title",
-                 bold=True, color="#ffffff", stroke=6)]
+           _text(collection.get("name") or "", 6, 16, 56 * k, family="title",
+                 bold=True, color="#ffffff", stroke=6 * k)]
     desc = (collection.get("description") or "").strip()
     if desc:
-        els.append(_text(desc, 23, 8, 22, color="#ffffff", stroke=3, x=12, w=76))
-    return _page("cover", W, H, els), {ref: art}
+        els.append(_text(desc, 23, 8, 22 * k, color="#ffffff", stroke=3 * k, x=12, w=76))
+    return _page("cover", W, H, els), images
 
 
 def _title_page(collection: Dict[str, Any], ep: Dict[str, Any], W: int, H: int,
@@ -137,10 +158,11 @@ def _title_page(collection: Dict[str, Any], ep: Dict[str, Any], W: int, H: int,
         bw = bh * (fw / fh) * (H / W)
     ref = THUMB_PREFIX + "thumb"
     thumb = _render_scaled(first, bw / 100 * W * scale, resolve)
-    els = [_text(collection.get("name") or "", 7, 7, 26, family="title",
+    k = W / DEFAULT_W
+    els = [_text(collection.get("name") or "", 7, 7, 26 * k, family="title",
                  color="#555555"),
-           _text(ep["title"], 15, 14, 44, family="title", bold=True),
-           _image(ref, (100 - bw) / 2, 34, bw, bh, 1.5)]
+           _text(ep["title"], 15, 14, 44 * k, family="title", bold=True),
+           _image(ref, (100 - bw) / 2, 34, bw, bh, 1.5 * k)]
     return _page(f"title: {ep['name']}", W, H, els), {ref: thumb}
 
 

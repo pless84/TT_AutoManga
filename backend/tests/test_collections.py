@@ -383,3 +383,44 @@ def test_auto_group_endpoint_makes_mature_uncut_collections(env):
     from backend.storage import collections as col_store
     stored = {x["name"]: x for x in col_store.list_collections()}
     assert stored["Jade & Haile (Uncut)"]["mature"] is True and "mature" not in stored["Jade & Haile"]
+
+
+def test_cover_uses_the_pages_largest_picture_without_lettering():
+    from backend.render import collection_export as ce
+    page = {"id": "p", "width": 600, "height": 900, "elements": [
+        {"type": "image", "src": "/api/assets/file/small", "x": 0, "y": 0, "width": 50, "height": 30},
+        {"type": "image", "src": "/api/assets/file/big", "x": 0, "y": 30, "width": 100, "height": 40},
+        {"type": "image", "src": "/api/assets/file/hidden", "visible": False,
+         "x": 0, "y": 0, "width": 100, "height": 100},
+        {"type": "bubble", "text": "hi", "x": 10, "y": 10, "width": 20, "height": 10}]}
+    eps = [{"id": "e", "pages": [page]}]
+    cover, images = ce._cover_page({"name": "S", "cover": {"projectId": "e", "pageId": "p"}},
+                                   eps, 600, 900, 1, None)
+    art = [el for el in cover["elements"] if el["type"] == "image"]
+    assert [el["src"] for el in art] == ["/api/assets/file/big"] and images == {}
+    assert not any(el["type"] == "bubble" for el in cover["elements"])
+
+    # a page without a picture falls back to the whole rendered page
+    bare = {"id": "q", "width": 600, "height": 900, "elements": []}
+    cover, images = ce._cover_page({"name": "S"}, [{"id": "e", "pages": [bare]}],
+                                   600, 900, 0.05, None)
+    assert list(images) == [ce.THUMB_PREFIX + "cover"]
+
+
+def test_generated_pages_scale_text_with_page_width():
+    """Comics imports are 1650 px wide: the titles must keep their size
+    relative to the page, not shrink to a third (sizes are given for 600 px)."""
+    from backend.render import collection_export as ce
+    sizes = {}
+    for W, H in ((600, 900), (1650, 2550)):
+        page = {"id": "p", "width": W, "height": H, "elements": []}
+        eps = [{"id": "e", "title": "Part One", "name": "S — Part One", "pages": [page]}]
+        cover, _ = ce._cover_page({"name": "S"}, eps, W, H, 0.05, None)
+        title, _ = ce._title_page({"name": "S"}, eps[0], W, H, 0.05, None)
+        sizes[W] = [(el.get("fontSize"), el.get("strokeWidth"), el.get("frameBorderWidth"))
+                    for el in cover["elements"] + title["elements"]]
+    k = 1650 / 600
+    for small, big in zip(sizes[600], sizes[1650]):
+        for a, b in zip(small, big):
+            if a:
+                assert b == pytest.approx(a * k)

@@ -381,8 +381,11 @@ curl -s $BASE/api/collections/exports/$JOB
 #    pdf: {url, name} | null, zip: {url, name} | null}
 ```
 
-`cover` adds a generated page 1 (collection name over the chosen cover page,
-else the first episode's first page); `episodeTitlePages` (default on) puts a
+`cover` adds a generated page 1: the collection name over the largest picture
+of the chosen cover page, else the first episode's first page (full-bleed,
+without the page's balloons; the whole page when it has no picture). Generated
+pages size their text by page width, so 1650 px Comics imports get titles as
+large as 600 px pages do; `episodeTitlePages` (default on) puts a
 generated page before each episode (collection name, the episode's subtitle,
 a thumbnail of its first page); `pageNumbers` numbers every page
 continuously across the collection, the cover excepted. Titles use font
