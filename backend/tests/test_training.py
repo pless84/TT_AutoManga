@@ -463,7 +463,8 @@ def test_launch_command_returns_at_once_and_detaches(tmp_path, monkeypatch):
     (tk / "py").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(tr, "_HOMES", {"h": str(tmp_path)})
-    r = tr.Remote(config.TrainingConfig(host="h", toolkitDir="~/tk", python="./py"))
+    r = tr.Remote(config.TrainingConfig(host="h", toolkitDir="~/tk", python="./py",
+                                        baseModel="~/m.safetensors"))
     log = str(tmp_path / "train.log")
     t0 = time.time()
     proc = __import__("subprocess").run(["/bin/sh", "-c", r.launch_command("cfg.yaml", log)],

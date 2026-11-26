@@ -85,3 +85,25 @@ def test_ipadapter_block_validated(client):
         r = client.post("/api/settings/", json={"swarmui": bad})
         assert r.status_code == 422, bad
     assert config.settings.swarmui.ipadapterWeightType == "style transfer"
+
+
+def test_no_trainer_by_default_and_clearable(client):
+    """No trainer is set up by default; "" clears host and baseModel (the
+    Settings tab sends the whole block, empty fields included)."""
+    assert (config.TrainingConfig().host, config.TrainingConfig().baseModel) == ("", "")
+    body = {"training": {"host": "", "toolkitDir": "~/ai-toolkit", "python": "venv/bin/python",
+                         "baseModel": "", "loraFolder": "Comics"}}
+    r = client.post("/api/settings/", json=body)
+    assert r.status_code == 200, r.text
+    assert (config.settings.training.host, config.settings.training.baseModel) == ("", "")
+    # toolkitDir/python are still required
+    r = client.post("/api/settings/", json={"training": {"toolkitDir": ""}})
+    assert r.status_code in (400, 422)
+
+
+def test_remote_refuses_without_trainer():
+    from backend import training as tr
+    with pytest.raises(tr.RemoteError, match="no trainer configured"):
+        tr.Remote(config.TrainingConfig())
+    with pytest.raises(tr.RemoteError, match="no base model"):
+        tr.Remote(config.TrainingConfig(host="me@gpu-box"))

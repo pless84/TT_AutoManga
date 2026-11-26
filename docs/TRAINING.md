@@ -1,17 +1,21 @@
-# LoRA training on the Razer
+# LoRA training on a remote trainer
 
-AutoManga trains character LoRAs on a separate GPU machine ("the trainer",
-the Razer at 192.168.1.31) with [ai-toolkit](https://github.com/ostris/ai-toolkit).
+AutoManga trains character LoRAs on a separate Linux machine with an NVIDIA
+GPU ("the trainer") with [ai-toolkit](https://github.com/ostris/ai-toolkit).
+**No trainer is configured right now**: the Razer laptop this was built on
+(RTX 3070 Laptop, 8 GB) was handed back in November 2026, so `training.host`
+is empty and starting a job answers 400 until a new trainer is set up below.
+Datasets in `data/training/` and LoRAs already in SwarmUI are kept.
 The Mac keeps the datasets, pushes them over scp, launches the job over ssh,
 polls its log and pulls the finished `.safetensors` into SwarmUI.
 Code: `backend/training.py` (ssh/scp), `backend/api/training.py` (routes,
 job), `backend/training_templates/sdxl_lora.yaml.tmpl` (the recipe),
 `frontend/src/components/characters/TrainingPanel.tsx` (UI).
 
-## One-time setup (Linux trainer; Fedora 45 on the Razer)
+## One-time setup (Linux trainer)
 
 1. **SSH key**: the Mac's key in `~/.ssh/authorized_keys` on the trainer.
-   `ssh -o BatchMode=yes pless84@192.168.1.31 true` must succeed without a prompt.
+   `ssh -o BatchMode=yes user@trainer true` must succeed without a prompt.
 2. **ai-toolkit** in `~/ai-toolkit` with a CUDA venv (0.13.23; git ecee894 now):
    ```sh
    git clone https://github.com/ostris/ai-toolkit ~/ai-toolkit && cd ~/ai-toolkit
@@ -22,16 +26,16 @@ job), `backend/training_templates/sdxl_lora.yaml.tmpl` (the recipe),
    Jobs run `venv/bin/python run.py <config>`; the web UI (`run_linux.sh`) is not needed.
 3. **Base model**: the checkpoint the comics are painted with, copied once:
    ```sh
-   ssh pless84@192.168.1.31 mkdir -p models
+   ssh user@trainer mkdir -p models
    scp ~/SwarmUI/Models/Stable-Diffusion/Stylized/arthemyComics_v80.safetensors \
-       pless84@192.168.1.31:models/
+       user@trainer:models/
    shasum -a 256 ~/SwarmUI/Models/Stable-Diffusion/Stylized/arthemyComics_v80.safetensors
-   ssh pless84@192.168.1.31 sha256sum models/arthemyComics_v80.safetensors   # same (c6ba4ee4…)
+   ssh user@trainer sha256sum models/arthemyComics_v80.safetensors   # same (c6ba4ee4…)
    ```
 4. **Keep jobs alive**: jobs run under `setsid nohup`, so they survive the ssh
    connection and an AutoManga restart. They do not survive the trainer
    rebooting or sleeping: disable suspend while on AC (and keep it on AC).
-   `loginctl show-user pless84 -p Linger` is `yes` on the Razer.
+   `loginctl show-user <user> -p Linger` should be `yes`.
 
 ## Settings (`data/settings.json` → `training`, or Settings tab → "LoRA training")
 
@@ -41,15 +45,15 @@ name or path without `..`, each resolution a multiple of 64 in 256-1536).
 
 | key | default | |
 |---|---|---|
-| `host` | `pless84@192.168.1.31` | ssh destination |
+| `host` | `""` (none) | ssh destination `user@host`; empty = training off |
 | `os` | `linux` | only Linux is implemented (Windows: not yet) |
 | `toolkitDir` | `~/ai-toolkit` | `~` = the trainer's `$HOME` |
 | `python` | `venv/bin/python` | relative to `toolkitDir` |
-| `baseModel` | `/home/pless84/models/arthemyComics_v80.safetensors` | |
+| `baseModel` | `""` (none) | the checkpoint on the trainer, e.g. `~/models/arthemyComics_v80.safetensors` |
 | `loraFolder` | `Comics` | under `~/SwarmUI/Models/Lora` on the Mac |
 | `sampling` | `false` | ai-toolkit preview images; on 8 GB they OOM (see below) |
 | `resolution` | `[512, 768]` | dataset buckets (`datasets[].resolution`); 1024 OOMs on 8 GB with full-size images (see below) |
-| `cacheTextEmbeddings` | `false` | ai-toolkit `train.cache_text_embeddings`: captions encoded once before training (opt-in, not yet tried on the 3070) |
+| `cacheTextEmbeddings` | `false` | ai-toolkit `train.cache_text_embeddings`: captions encoded once before training (opt-in, not yet tried on 8 GB) |
 
 ## Recipe
 
@@ -83,7 +87,7 @@ Remove both directories to retrain a name from scratch.
 Characters tab → a character → **Train LoRA**: create the dataset (name and
 trigger word, e.g. `amnova`), add ≥ 15 images (upload, import the current
 project's panels, or **Generate 24** from the appearance text), **Start
-training**. 1500 steps take about 25 minutes on the RTX 3070 Laptop
+training**. 1500 steps took about 25 minutes on an RTX 3070 Laptop
 (≈1.05 it/s; a 100-step run took 2 min 20 s including caching). When done the
 LoRA is in SwarmUI as `Comics/<name>` and set on the character; copy the
 `lora NAME: Comics/<name> 0.8 <trigger>` line into a `.comic` script.
@@ -107,7 +111,7 @@ character's lora.
   `[512, 768]` (the default) on 8 GB; 1024 needs a bigger GPU for full-size
   images. `cacheTextEmbeddings` may free a little more (untested here).
 - **Job failed "process is gone without an exit code"**: the trainer
-  rebooted or the process was killed. On 2026-11-17 the Razer reset itself
+  rebooted or the process was killed. On 2026-11-17 the old trainer reset itself
   (no shutdown in the journal, "uncleanly shut down") while caching latents,
   minutes after an NVRM out-of-memory with Steam running; close games before
   training.

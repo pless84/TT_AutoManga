@@ -7,7 +7,7 @@ import type { Character } from '../../types';
 import { clampInt } from './clampInt';
 
 // Train LoRA (Phase 7): a dataset per character in data/training/<slug>/,
-// trained on the Razer by backend/api/training.py. One job at a time.
+// trained on the configured trainer by backend/api/training.py. One job at a time.
 
 interface DatasetImage { file: string; url: string; mtime: number }
 interface Generation { running: boolean; total: number; done: number; failed: number; errors: string[] }

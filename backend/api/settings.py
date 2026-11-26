@@ -1,7 +1,7 @@
 import re
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ValidationError, ValidationInfo, field_validator
 from typing import Optional, List, Dict, Any
 from ..core import config
 from ..core.config import is_masked_api_key
@@ -88,16 +88,18 @@ class TrainingConfigUpdate(BaseModel):
         if v is None:
             return None
         v = v.strip()
-        if not _HOST_RE.fullmatch(v):
+        if v and not _HOST_RE.fullmatch(v):    # "" = no trainer
             raise ValueError("host is user@host (letters, digits, . _ -; no spaces or quotes)")
         return v
 
     @field_validator("toolkitDir", "python", "baseModel")
     @classmethod
-    def _path(cls, v: Optional[str]) -> Optional[str]:
+    def _path(cls, v: Optional[str], info: ValidationInfo) -> Optional[str]:
         if v is None:
             return None
         v = v.strip()
+        if not v and info.field_name == "baseModel":    # "" = not set up yet
+            return v
         if not _REMOTE_PATH_RE.fullmatch(v) or v.startswith("-"):
             raise ValueError("a trainer path is letters, digits, / ~ . _ - and + "
                              "(no spaces or quotes)")
