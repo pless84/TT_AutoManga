@@ -142,7 +142,7 @@ export function TrainingSection({ value, onChange }: {
       <h4>{s.trainingTitle}</h4>
       <p className="text-sm text-secondary mb-md">{s.trainingDesc}</p>
       <div className="form-row">
-        {text('host', s.trainingHost, 'user@192.168.1.31')}
+        {text('host', s.trainingHost, 'user@gpu-box')}
         {text('toolkitDir', s.trainingToolkitDir, '~/ai-toolkit')}
       </div>
       <div className="form-row">

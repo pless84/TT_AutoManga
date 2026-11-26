@@ -752,13 +752,15 @@ without force.
 
 ### 9c. LoRA training (Characters tab "Train LoRA", `/api/training`)
 
-Character LoRAs are trained on the Razer (ai-toolkit, the sf_* SDXL recipe)
-over ssh/scp; setup and troubleshooting: `docs/TRAINING.md`. Settings live in
+Character LoRAs are trained on a remote Linux GPU machine (ai-toolkit, the
+sf_* SDXL recipe) over ssh/scp. No trainer is configured by default
+(`training.host` and `baseModel` are `""`; starting a job then gets 400);
+setup and troubleshooting: `docs/TRAINING.md`. Settings live in
 `data/settings.json` → `training {host, os, toolkitDir, python, baseModel,
 loraFolder, sampling, resolution, cacheTextEmbeddings}` (Settings tab "LoRA
 training" or `POST /api/settings/ {"training": {...}}`, validated;
 `GET /api/training/settings` shows them). `resolution` (default `[512, 768]`)
-is the dataset bucket list: 1024 ran out of memory on the 8 GB RTX 3070 with
+is the dataset bucket list: 1024 ran out of memory on an 8 GB RTX 3070 with
 full-size panels.
 
 - Datasets: `data/training/<slug>/img_NNN.png` + `img_NNN.txt` (the trigger

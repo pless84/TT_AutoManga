@@ -1,4 +1,4 @@
-"""LoRA training on a remote trainer (the Razer) with ai-toolkit.
+"""LoRA training on a remote Linux GPU trainer with ai-toolkit.
 
 ``Remote`` drives the trainer over ssh/scp (BatchMode, so a missing key fails
 fast instead of prompting). A job is detached on the trainer: launched under
@@ -115,7 +115,10 @@ class Remote:
         if self.os not in SUPPORTED_OS:
             raise RemoteError(f"trainer os {self.os!r} is not supported yet (only linux)")
         if not self.host:
-            raise RemoteError("no trainer host configured (settings training.host)")
+            raise RemoteError("no trainer configured: set Settings → LoRA training → "
+                              "Trainer (settings training.host)")
+        if not self._base_model:
+            raise RemoteError("no base model configured on the trainer (settings training.baseModel)")
 
     # -- plumbing ----------------------------------------------------------
     def ssh_args(self, command: str) -> List[str]:

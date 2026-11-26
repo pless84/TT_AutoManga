@@ -125,20 +125,21 @@ class AuthConfig(BaseModel):
 
 
 class TrainingConfig(BaseModel):
-    # The LoRA trainer (ai-toolkit on the Razer), driven over ssh/scp with
-    # key auth; see docs/TRAINING.md. ~ in paths is the trainer's $HOME.
-    host: str = "pless84@192.168.1.31"
+    # The LoRA trainer (ai-toolkit on a Linux GPU machine), driven over
+    # ssh/scp with key auth; see docs/TRAINING.md. ~ in paths is the
+    # trainer's $HOME. No trainer by default: host "" = training off.
+    host: str = ""
     os: str = "linux"                     # only linux is implemented
     toolkitDir: str = "~/ai-toolkit"
     python: str = "venv/bin/python"       # relative to toolkitDir
-    baseModel: str = "/home/pless84/models/arthemyComics_v80.safetensors"
+    baseModel: str = ""                   # path on the trainer, e.g. ~/models/x.safetensors
     loraFolder: str = "Comics"            # under SwarmUI Models/Lora on this Mac
     # ai-toolkit's preview samples (step 0 and every 500). Off by default:
-    # on the 8 GB RTX 3070 the 832x1216 VAE decode next to the low_vram
+    # on an 8 GB GPU (RTX 3070) the 832x1216 VAE decode next to the low_vram
     # model runs out of CUDA memory and kills the job.
     sampling: bool = False
     # ai-toolkit dataset buckets (datasets[].resolution): each a multiple of
-    # 64 in 256..1536. 1024 ran out of CUDA memory at step 5 on the 8 GB RTX
+    # 64 in 256..1536. 1024 ran out of CUDA memory at step 5 on an 8 GB RTX
     # 3070 with full-size (~1 MP) comic panels; 432x1024 sprites were fine.
     resolution: List[int] = [512, 768]
     # ai-toolkit train.cache_text_embeddings: encode the captions once
