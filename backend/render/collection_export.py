@@ -3,9 +3,10 @@
 Output order: an optional generated collection cover, then per episode an
 optional generated title page (collection name, the episode's subtitle, a
 thumbnail of its first page) followed by the episode's own pages. Pages are
-rendered ONE at a time into a temp dir (and straight into the incremental
-PDF); the ZIP is assembled from those PNG files afterwards, so memory stays
-at about one page image whatever the collection's length.
+rendered ONE at a time and streamed into the PDF and ZIP (export_service.
+write_export), so memory stays at about one page image (two around a title
+page, whose thumbnail reuses the episode's first page) whatever the
+collection's length.
 
 Generated pages are ordinary page dicts drawn by the shared renderer and
 fonts (titles in font family "title" when data/fonts has one), sized like the
@@ -17,17 +18,14 @@ thumbnail, the cover of a page without a picture) reach the renderer through
 a resolver wrapper under THUMB_PREFIX refs.
 """
 import logging
-import shutil
-import tempfile
 import uuid
-import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from PIL import Image
 
 from . import render_page as _render_page
-from .export_service import PdfWriter, prune_exports, stamp_label
+from .export_service import ExportOptions, stamp_label, write_export
 from ..storage.collections import split_title
 
 logger = logging.getLogger(__name__)
@@ -146,7 +144,12 @@ def _cover_page(collection: Dict[str, Any], episodes: List[Dict[str, Any]],
 
 
 def _title_page(collection: Dict[str, Any], ep: Dict[str, Any], W: int, H: int,
-                scale: float, resolve) -> Tuple[Dict[str, Any], Dict[str, Image.Image]]:
+                scale: float, resolve,
+                first_img: Optional[Image.Image] = None
+                ) -> Tuple[Dict[str, Any], Dict[str, Image.Image]]:
+    """first_img: the episode's first page already rendered at full size; the
+    thumbnail then reuses it (the renderer scales it into its box) instead of
+    rendering the page a second time."""
     first = ep["pages"][0]
     fw = float(first.get("width") or DEFAULT_W)
     fh = float(first.get("height") or DEFAULT_H)
@@ -157,7 +160,8 @@ def _title_page(collection: Dict[str, Any], ep: Dict[str, Any], W: int, H: int,
         bh = 55.0
         bw = bh * (fw / fh) * (H / W)
     ref = THUMB_PREFIX + "thumb"
-    thumb = _render_scaled(first, bw / 100 * W * scale, resolve)
+    thumb = first_img if first_img is not None else \
+        _render_scaled(first, bw / 100 * W * scale, resolve)
     k = W / DEFAULT_W
     els = [_text(collection.get("name") or "", 7, 7, 26 * k, family="title",
                  color="#555555"),
@@ -180,29 +184,42 @@ def _generated(page: Dict[str, Any], images: Dict[str, Image.Image], scale: floa
 
 
 def _iter_output(collection, episodes, scale, resolve, cover: bool,
-                 episode_title_pages: bool) -> Iterator[Tuple[Dict[str, Any], Image.Image, bool]]:
-    """(page, rendered image, is_cover) one at a time."""
+                 episode_title_pages: bool,
+                 opts: Optional[ExportOptions] = None
+                 ) -> Iterator[Tuple[Dict[str, Any], Image.Image, bool, float]]:
+    """(page, rendered image, is_cover, render scale) one at a time."""
+    opts = opts or ExportOptions()
     first = episodes[0]["pages"][0]
     W = int(first.get("width") or DEFAULT_W)
     H = int(first.get("height") or DEFAULT_H)
-    # no rendered image is kept in a local across a yield: the consumer's
-    # page is the only one alive while it is written out
+    gs = opts.page_scale({"width": W}, scale)   # generated pages
     if cover:
-        yield _generated(*_cover_page(collection, episodes, W, H, scale, resolve),
-                         scale, resolve) + (True,)
+        yield _generated(*_cover_page(collection, episodes, W, H, gs, resolve),
+                         gs, resolve) + (True, gs)
     for ep in episodes:
+        first_img = None
         if episode_title_pages:
-            yield _generated(*_title_page(collection, ep, W, H, scale, resolve),
-                             scale, resolve) + (False,)
-        for page in ep["pages"]:
-            yield page, render_page(page, scale, resolve), False
+            fp = ep["pages"][0]
+            # rendered once: the title page's thumbnail and the page itself
+            first_img = render_page(fp, opts.page_scale(fp, scale), resolve)
+            yield _generated(*_title_page(collection, ep, W, H, gs, resolve, first_img),
+                             gs, resolve) + (False, gs)
+        for j, page in enumerate(ep["pages"]):
+            s = opts.page_scale(page, scale)
+            if j == 0 and first_img is not None:
+                img, first_img = first_img, None
+                yield page, img, False, s
+            else:
+                yield page, render_page(page, s, resolve), False, s
+            img = None
 
 
 def export_collection(collection: Dict[str, Any], episodes: List[Dict[str, Any]],
                       fmt: str, scale: float, resolve, out_dir: Path,
                       base_name: str, *, page_numbers: bool = False,
                       episode_title_pages: bool = True, cover: bool = False,
-                      progress: Optional[Callable[[int, int], None]] = None) -> dict:
+                      progress: Optional[Callable[[int, int], None]] = None,
+                      opts: Optional[ExportOptions] = None) -> dict:
     """Write <base_name>.pdf / .zip under out_dir; returns
     {pages, pdf?: {path, url}, zip?: {path, url}}. Page numbers run across
     the whole collection; the generated cover is page 1 and unnumbered."""
@@ -210,53 +227,17 @@ def export_collection(collection: Dict[str, Any], episodes: List[Dict[str, Any]]
         raise ValueError(f"unknown export format: {fmt}")
     if not episodes:
         raise ValueError("collection has no episodes with pages to export")
+    opts = (opts or ExportOptions()).validate()
     total = page_total(episodes, cover, episode_title_pages)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = out_dir / f"{base_name}.pdf"
-    zip_path = out_dir / f"{base_name}.zip"
-    want_pdf, want_zip = fmt in ("pdf", "both"), fmt in ("zip", "both")
-    pdf_part = out_dir / f".{base_name}.pdf.part"
-    zip_part = out_dir / f".{base_name}.zip.part"
-    tmp = Path(tempfile.mkdtemp(prefix="automanga_collection_"))
-    digits = max(3, len(str(total)))
-    try:
-        pdf = PdfWriter(str(pdf_part)) if want_pdf else None
-        png_files: List[Path] = []
-        done = 0
-        for i, (page, img, is_cover) in enumerate(_iter_output(
-                collection, episodes, scale, resolve, cover, episode_title_pages)):
+
+    def numbered():
+        for i, (page, img, is_cover, s) in enumerate(_iter_output(
+                collection, episodes, scale, resolve, cover, episode_title_pages, opts)):
             if page_numbers and not is_cover:
-                stamp_label(img, str(i + 1), scale)
-            if want_zip:
-                f = tmp / f"page_{i + 1:0{digits}d}.png"
-                img.save(f, format="PNG")
-                png_files.append(f)
-            if pdf:
-                pdf.add(img, page)
-            del img   # drop the page before rendering the next one
-            done += 1
-            if progress:
-                progress(done, total)
-        result: dict = {"pages": done}
-        if pdf:
-            pdf.close()
-            pdf_part.replace(pdf_path)
-            result["pdf"] = {"path": str(pdf_path),
-                             "url": f"/api/export/download/{pdf_path.name}"}
-        if want_zip:
-            # PNGs are already deflate-compressed: store them as-is
-            with zipfile.ZipFile(zip_part, "w", zipfile.ZIP_STORED) as zf:
-                for f in png_files:
-                    zf.write(f, f.name)
-            zip_part.replace(zip_path)
-            result["zip"] = {"path": str(zip_path),
-                             "url": f"/api/export/download/{zip_path.name}"}
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-        for p in (pdf_part, zip_part):
-            try:
-                p.unlink()
-            except FileNotFoundError:
-                pass
-    prune_exports(out_dir, keep={base_name})
-    return result
+                stamp_label(img, str(i + 1), s)
+            yield page, img
+            img = None
+
+    return write_export(numbered(), fmt, out_dir, base_name, opts,
+                        digits=max(3, len(str(total))),
+                        progress=(lambda done: progress(done, total)) if progress else None)

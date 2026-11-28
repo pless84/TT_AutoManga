@@ -513,7 +513,7 @@ def test_unknown_text_align_renders_left():
 # 7. export service: page-at-a-time, PNGs stored in the ZIP
 # ---------------------------------------------------------------------------
 
-def test_export_pages_zip_is_stored_from_written_pngs(tmp_path):
+def test_export_pages_zip_is_stored_pngs_without_pages_dir(tmp_path):
     from backend.render.export_service import export_pages, export_pages_to_bytes
     pages = [{"width": 60, "height": 90, "elements": []} for _ in range(3)]
     res = export_pages(pages, "both", 1.0, None, tmp_path, "m", page_numbers=True)
@@ -521,7 +521,10 @@ def test_export_pages_zip_is_stored_from_written_pngs(tmp_path):
         infos = zf.infolist()
         assert [i.filename for i in infos] == ["page_001.png", "page_002.png", "page_003.png"]
         assert all(i.compress_type == zipfile.ZIP_STORED for i in infos)
-        assert zf.read("page_002.png") == (Path(res["pages_dir"]) / "page_002.png").read_bytes()
+        assert zf.read("page_002.png").startswith(b"\x89PNG")
+    # pages go straight into the ZIP: no _pages/ folder, no .part leftovers
+    assert "pages_dir" not in res and res["pages"] == 3
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["m.pdf", "m.zip"]
     assert Path(res["pdf"]["path"]).read_bytes().startswith(b"%PDF")
     out = export_pages_to_bytes(pages, "both", 1.0, None)
     assert out["pdf"].startswith(b"%PDF") and zipfile.is_zipfile(io.BytesIO(out["zip"]))

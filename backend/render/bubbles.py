@@ -23,7 +23,7 @@ Parity notes (verified against pageRenderer.ts and the live editor's CSS):
 import math
 import re
 from typing import List, NamedTuple, Optional, Tuple
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 from .fonts import FontChain, get_font_chain
 from .tails import tail_bounds, tail_geometry, wedge_edge
 
@@ -364,14 +364,24 @@ def _draw_pointed_tail(img: Image.Image, tail: dict, pad: Tuple[int, int], bg, b
         return
     edge = [(ox + x, oy + y) for x, y in wedge_edge(tail)]
     d.polygon(edge, fill=bg)
-    lines = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    _stroke_polyline(ImageDraw.Draw(lines), edge, border, stroke_w)
+    # work on the tail's bounding box only (padded by more than the stroke
+    # and the filter radius, so the result is identical to a full-image pass)
+    m = 2 * stroke_w + 2
+    xs, ys = [p[0] for p in edge], [p[1] for p in edge]
+    x0, y0 = max(0, int(min(xs)) - m), max(0, int(min(ys)) - m)
+    x1 = min(img.width, int(math.ceil(max(xs))) + m + 1)
+    y1 = min(img.height, int(math.ceil(max(ys))) + m + 1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    lines = Image.new("RGBA", (x1 - x0, y1 - y0), (0, 0, 0, 0))
+    _stroke_polyline(ImageDraw.Draw(lines), [(x - x0, y - y0) for x, y in edge],
+                     border, stroke_w)
     size = 2 * stroke_w + 1
-    interior = shape_mask.filter(ImageFilter.MinFilter(size))
-    outside = interior.point(lambda v: 255 - v)
+    interior = shape_mask.crop((x0, y0, x1, y1)).filter(ImageFilter.MinFilter(size))
+    outside = ImageChops.invert(interior)
     lines.putalpha(Image.composite(lines.getchannel("A"),
-                                   Image.new("L", img.size, 0), outside))
-    img.alpha_composite(lines)
+                                   Image.new("L", lines.size, 0), outside))
+    img.alpha_composite(lines, (x0, y0))
 
 
 def _stroke_polyline(d: ImageDraw.ImageDraw, pts, fill, width):

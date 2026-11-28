@@ -27,6 +27,7 @@ from ..core.swarmui_client import swarm_client
 from ..jobs import create_job, job_snapshot, run_job
 from ..render import render_page
 from ..render.export_service import export_pages
+from .export_options import ExportOptionsMixin
 from ..render.resolve import make_resolver
 from ..storage.asset_store import asset_store
 from ..storage.manager import storage, InvalidProjectIdError
@@ -1226,7 +1227,7 @@ async def upscale_asset(req: UpscaleRequest):
             "model": req.model}
 
 
-class AgentExportRequest(BaseModel):
+class AgentExportRequest(ExportOptionsMixin):
     project_id: str
     format: str = "both"       # pdf | zip | both
     scale: float = 2.0
@@ -1243,12 +1244,13 @@ async def agent_export(req: AgentExportRequest):
     if req.format not in ("pdf", "zip", "both"):
         raise HTTPException(status_code=400, detail="format must be pdf|zip|both")
     fmt = req.format
+    opts = req.export_options()
     base_name = f"manga_{req.project_id[:8]}_{time.strftime('%Y%m%d_%H%M%S')}"
     # minutes of PIL/reportlab work for a long project: run it in a thread
     result = await asyncio.to_thread(
         export_pages, pages, fmt, min(8.0, max(0.5, req.scale)),
         _resolver, _exports_dir(), base_name,
-        page_numbers=req.page_numbers)
+        page_numbers=req.page_numbers, opts=opts)
     logger.info("agent/export project=%s fmt=%s base=%s", req.project_id, fmt,
                 base_name)
     return result

@@ -20,6 +20,7 @@ export function CollectionExportDialog({ collection, onClose }: {
   // starts at the saved Export Quality; can be changed for this one export
   const defaultScale = useExportScale();
   const [scale, setScale] = useState(defaultScale);
+  const [imageFormat, setImageFormat] = useState<'jpeg' | 'png'>('jpeg');
   const [pageNumbers, setPageNumbers] = useState(true);
   const [titlePages, setTitlePages] = useState(true);
   const [cover, setCover] = useState(true);
@@ -56,7 +57,7 @@ export function CollectionExportDialog({ collection, onClose }: {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          format, scale: clampScale(scale), pageNumbers,
+          format, scale: clampScale(scale), imageFormat, pageNumbers,
           episodeTitlePages: titlePages, cover,
         }),
       });
@@ -110,6 +111,15 @@ export function CollectionExportDialog({ collection, onClose }: {
               value={scale} disabled={running}
               onChange={e => setScale(Number(e.target.value))}
               onBlur={() => setScale(s => clampScale(s))} />
+          </label>
+          <label className="collection-export-row">
+            <span>{t.showcase.imageQuality}</span>
+            <select className="select" value={imageFormat} disabled={running || format === 'zip'}
+              data-tip={tip.imageFormat}
+              onChange={e => setImageFormat(e.target.value as 'jpeg' | 'png')}>
+              <option value="jpeg">{t.showcase.imageCompact}</option>
+              <option value="png">{t.showcase.imageLossless}</option>
+            </select>
           </label>
           <label className="collection-export-check" data-tip={tip.exportPageNumbers}>
             <input type="checkbox" checked={pageNumbers} disabled={running}

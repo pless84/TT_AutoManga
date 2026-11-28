@@ -260,7 +260,8 @@ auto-number `panel_1..n`.
   `POST /api/agent/projects/{id}/plan-pages`, `POST .../cover`,
   `GET /api/agent/sfx-presets`.
 - Export/assets: `POST /api/agent/export`
-  `{format:"pdf"|"zip"|"both", scale, page_numbers}`, `GET /api/export/download/…`,
+  `{format:"pdf"|"zip"|"both", scale, page_numbers, imageFormat?:"jpeg"|"png",
+  quality?, dpi?}` (PDF pages are JPEG q85 by default, ~10x smaller than PNG), `GET /api/export/download/…`,
   `POST /api/assets/file` (register your own image), `GET /api/agent/assets/{id}`
   (generation recipe), `GET /api/agent/inference-models` + `POST /api/agent/upscale`
   (local ONNX x4; needs `requirements-inference.txt`, else 503).

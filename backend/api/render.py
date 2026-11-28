@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import List
 from ..render import render_page
 from ..render.export_service import export_pages_to_bytes
+from .export_options import ExportOptionsMixin
 from ..render.resolve import make_resolver
 from ..storage.asset_store import asset_store
 
@@ -37,7 +38,7 @@ def _render_png(page: dict, scale: float) -> bytes:
     return buf.getvalue()
 
 
-class RenderExportRequest(BaseModel):
+class RenderExportRequest(ExportOptionsMixin):
     pages: List[dict]
     format: str = "pdf"
     scale: float = 2.0
@@ -49,10 +50,11 @@ async def render_export(req: RenderExportRequest):
     if not req.pages:
         raise HTTPException(status_code=400, detail="No pages provided")
     scale = min(8.0, max(0.5, req.scale))
+    opts = req.export_options()
     try:
         payload = await asyncio.to_thread(
             export_pages_to_bytes, req.pages, req.format, scale,
-            _resolver, req.page_numbers)
+            _resolver, req.page_numbers, opts)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if req.format == "pdf":

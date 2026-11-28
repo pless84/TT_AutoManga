@@ -142,7 +142,6 @@ def _draw_image(el, ew, eh, scale, resolve):
     img = resolve(src)
     if img is None:
         return None
-    img = img.convert("RGBA")
     iw, ih = img.size
 
     out = Image.new("RGBA", (ew, eh), (0, 0, 0, 0))
@@ -163,9 +162,23 @@ def _draw_image(el, ew, eh, scale, resolve):
     dx = (ew - draw_w) / 2 + (el.get("imageOffsetX") or 0) / 100 * ew
     dy = (eh - draw_h) / 2 + (el.get("imageOffsetY") or 0) / 100 * eh
 
-    crop = img.crop((int(sx), int(sy), max(1, int(sx + sw)), max(1, int(sy + sh))))
-    crop = crop.resize((max(1, int(round(draw_w))), max(1, int(round(draw_h)))),
-                       Image.LANCZOS)
+    tw, th = max(1, int(round(draw_w))), max(1, int(round(draw_h)))
+    # crop first, then convert: only the visible part is converted to RGBA
+    box = (int(sx), int(sy), max(1, int(sx + sw)), max(1, int(sy + sh)))
+    inside = box[0] >= 0 and box[1] >= 0 and box[2] <= iw and box[3] <= ih
+    if not inside and img.mode != "RGBA":
+        img = img.convert("RGBA")   # crop pads outside the image: transparent
+    crop = img.crop(box)
+    if crop.mode not in ("RGB", "RGBA"):
+        crop = crop.convert("RGBA")
+    # a source many times the target size (4x upscales): box-reduce by the
+    # whole factor first, so LANCZOS only does the last < 2x of the work
+    f = min(crop.width // (2 * tw), crop.height // (2 * th))
+    if f >= 2:
+        crop = crop.reduce(f)
+    crop = crop.resize((tw, th), Image.LANCZOS)
+    if crop.mode != "RGBA":
+        crop = crop.convert("RGBA")
     out.alpha_composite(crop, (int(round(dx)), int(round(dy))))
 
     # --- quadrilateral clip ---

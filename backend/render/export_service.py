@@ -4,8 +4,10 @@ Two entry points over the same renderer:
 - export_pages_to_bytes: in-memory PDF/ZIP (used by POST /api/render/export)
 - export_pages: writes files under data/exports and returns download URLs
   (used by POST /api/agent/export)
+Collection export (collection_export.py) feeds write_export as well.
 
-PDF pages are sized 1 image px = 1 pt, i.e. the page's own width/height.
+PDF pages are ExportOptions.pdf_width_in wide (height by aspect); page images
+are JPEG by default (see ExportOptions).
 """
 import io
 import logging
@@ -14,12 +16,13 @@ import shutil
 import time
 import zipfile
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Callable, Iterable, Iterator, List, Optional, Tuple
 from PIL import Image
 from . import render_page
 
-# Maximum viewer compatibility: embed images FlateDecode-only (no ASCII85
-# layer). Some PDF viewers render A85+Flate filter arrays as blank pages.
+# Maximum viewer compatibility: embed images without an ASCII85 layer. Some
+# PDF viewers render A85+Flate filter arrays as blank pages.
 from reportlab import rl_config as _rl_config
 _rl_config.useA85 = 0
 
@@ -128,35 +131,103 @@ def _stamp_page_numbers(images: List[Image.Image], scale: float) -> None:
         _stamp_page_number(img, i, scale)
 
 
-def _iter_pages(pages: List[dict], scale: float, resolve,
-                page_numbers: bool) -> Iterator[Tuple[int, dict, Image.Image]]:
-    """Render one page at a time: a 30-page export at scale 2 must never
-    hold every page image in memory at once."""
-    for i, page in enumerate(pages):
-        img = render_page(page, scale, resolve)
-        if page_numbers:
-            _stamp_page_number(img, i, scale)
-        yield i, page, img
+# ------------------------------------------------------------------ options
+
+IMAGE_FORMATS = ("jpeg", "png")          # PDF page images
+ZIP_FORMATS = ("png", "webp", "jpeg")    # ZIP page files
+DEFAULT_PDF_WIDTH_IN = 6.625             # US comic trim width
+
+
+@dataclass
+class ExportOptions:
+    """How exported pages are encoded.
+
+    image_format: PDF page images. "jpeg" (default) embeds the JPEG bytes as
+      they are (DCTDecode), about 5-10x smaller than "png" (lossless Flate).
+    quality: JPEG quality 1-100 (PDF pages, and ZIP files when zip_format is
+      jpeg).
+    zip_format: ZIP page files: "png" (default, lossless), "webp" (lossless,
+      ~30% smaller) or "jpeg".
+    dpi: when set, every page is rendered at the scale that gives this many
+      pixels per inch at pdf_width_in, whatever its own pixel width (a 600 px
+      and a 1650 px page come out the same size); overrides scale.
+    pdf_width_in: physical PDF page width in inches; height keeps the page's
+      aspect ratio.
+    """
+    image_format: str = "jpeg"
+    quality: int = 85
+    zip_format: str = "png"
+    dpi: Optional[float] = None
+    pdf_width_in: float = DEFAULT_PDF_WIDTH_IN
+
+    def validate(self) -> "ExportOptions":
+        if self.image_format not in IMAGE_FORMATS:
+            raise ValueError(f"imageFormat must be one of {'|'.join(IMAGE_FORMATS)}")
+        if self.zip_format not in ZIP_FORMATS:
+            raise ValueError(f"zipFormat must be one of {'|'.join(ZIP_FORMATS)}")
+        if not 1 <= int(self.quality) <= 100:
+            raise ValueError("quality must be 1-100")
+        if self.dpi is not None and not 36 <= float(self.dpi) <= 1200:
+            raise ValueError("dpi must be 36-1200")
+        if not 1 <= float(self.pdf_width_in) <= 40:
+            raise ValueError("pdfWidthIn must be 1-40")
+        return self
+
+    def page_scale(self, page: dict, scale: float) -> float:
+        """Render scale for one page: from dpi when set, else ``scale``."""
+        if self.dpi is None:
+            return scale
+        pw = float(page.get("width") or 600)
+        return max(0.05, min(8.0, float(self.dpi) * self.pdf_width_in / pw))
+
+
+def _encode(img: Image.Image, fmt: str, quality: int) -> bytes:
+    b = io.BytesIO()
+    if fmt == "jpeg":
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        img.save(b, format="JPEG", quality=int(quality), optimize=True,
+                 subsampling="4:2:0")
+    elif fmt == "webp":
+        img.save(b, format="WEBP", lossless=True, method=4)
+    else:
+        img.save(b, format="PNG")
+    return b.getvalue()
+
+
+_EXT = {"jpeg": "jpg", "png": "png", "webp": "webp"}
 
 
 class PdfWriter:
-    """Incremental PDF: each page is embedded as soon as it is rendered."""
+    """Incremental PDF: each page is embedded as soon as it is rendered.
 
-    def __init__(self, target):
+    Pages are pdf_width_in wide (height by aspect). JPEG page images are
+    embedded as-is (DCTDecode); PNG ones are decoded and Flate-compressed."""
+
+    def __init__(self, target, opts: Optional[ExportOptions] = None):
         from reportlab.pdfgen import canvas as rl_canvas
         self._rl_canvas = rl_canvas
         self.target = target
+        self.opts = opts or ExportOptions()
         self.c = None
 
-    def add(self, img: Image.Image, page: dict) -> None:
+    def add(self, img: Image.Image, page: dict,
+            encoded: Optional[bytes] = None) -> None:
         from reportlab.lib.utils import ImageReader
-        w = page.get("width", 600)
-        h = page.get("height", 900)
+        pw = float(page.get("width") or 600)
+        ph = float(page.get("height") or 900)
+        w = self.opts.pdf_width_in * 72
+        h = w * ph / pw
         if self.c is None:
             self.c = self._rl_canvas.Canvas(self.target, pagesize=(w, h))
         else:
             self.c.setPageSize((w, h))
-        self.c.drawImage(ImageReader(img), 0, 0, width=w, height=h)
+        if self.opts.image_format == "jpeg":
+            data = encoded or _encode(img, "jpeg", self.opts.quality)
+            src = ImageReader(io.BytesIO(data))
+        else:
+            src = ImageReader(img)
+        self.c.drawImage(src, 0, 0, width=w, height=h)
         self.c.showPage()
 
     def close(self) -> None:
@@ -164,70 +235,131 @@ class PdfWriter:
             self.c.save()
 
 
-def _png_bytes(img: Image.Image) -> bytes:
-    b = io.BytesIO()
-    img.save(b, format="PNG")
-    return b.getvalue()
+class ExportSink:
+    """Takes rendered pages one at a time and writes them to a PDF and/or a
+    ZIP (targets: paths or file objects). Each page is encoded once per
+    format; when the PDF and the ZIP use the same format the bytes are
+    shared. ZIP entries are stored, not deflated (already compressed)."""
+
+    def __init__(self, pdf_target=None, zip_target=None,
+                 opts: Optional[ExportOptions] = None, digits: int = 3):
+        self.opts = (opts or ExportOptions()).validate()
+        self.digits = digits
+        self.pdf = PdfWriter(pdf_target, self.opts) if pdf_target is not None else None
+        self.zf = (zipfile.ZipFile(zip_target, "w", zipfile.ZIP_STORED)
+                   if zip_target is not None else None)
+        self.count = 0
+
+    def add(self, img: Image.Image, page: dict) -> None:
+        o = self.opts
+        pdf_bytes = None
+        if self.pdf is not None and o.image_format == "jpeg":
+            pdf_bytes = _encode(img, "jpeg", o.quality)
+        if self.zf is not None:
+            if pdf_bytes is not None and o.zip_format == "jpeg":
+                data = pdf_bytes
+            else:
+                data = _encode(img, o.zip_format, o.quality)
+            name = f"page_{self.count + 1:0{self.digits}d}.{_EXT[o.zip_format]}"
+            self.zf.writestr(name, data)
+        if self.pdf is not None:
+            self.pdf.add(img, page, pdf_bytes)
+        self.count += 1
+
+    def close(self) -> None:
+        try:
+            if self.zf is not None:
+                self.zf.close()
+        finally:
+            if self.pdf is not None:
+                self.pdf.close()
+
+
+def _formats(fmt: str) -> Tuple[bool, bool]:
+    if fmt not in ("pdf", "zip", "both"):
+        raise ValueError(f"unknown export format: {fmt}")
+    return fmt in ("pdf", "both"), fmt in ("zip", "both")
+
+
+def write_export(rendered: Iterable[Tuple[dict, Image.Image]], fmt: str,
+                 out_dir: Path, base_name: str,
+                 opts: Optional[ExportOptions] = None, digits: int = 3,
+                 progress: Optional[Callable[[int], None]] = None) -> dict:
+    """Write <base_name>.pdf / .zip under out_dir from (page, image) pairs.
+    Both are written to hidden .part files and renamed only when complete,
+    so a failed export never leaves a truncated file under the final name.
+    Returns {pages, pdf?: {path, url}, zip?: {path, url}}."""
+    want_pdf, want_zip = _formats(fmt)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path, zip_path = out_dir / f"{base_name}.pdf", out_dir / f"{base_name}.zip"
+    pdf_part = out_dir / f".{base_name}.pdf.part"
+    zip_part = out_dir / f".{base_name}.zip.part"
+    try:
+        sink = ExportSink(str(pdf_part) if want_pdf else None,
+                          str(zip_part) if want_zip else None, opts, digits)
+        try:
+            for page, img in rendered:
+                sink.add(img, page)
+                del img   # drop the page before rendering the next one
+                if progress:
+                    progress(sink.count)
+        finally:
+            sink.close()
+        result: dict = {"pages": sink.count}
+        for want, part, path, key in ((want_pdf, pdf_part, pdf_path, "pdf"),
+                                      (want_zip, zip_part, zip_path, "zip")):
+            if want:
+                part.replace(path)
+                result[key] = {"path": str(path),
+                               "url": f"/api/export/download/{path.name}"}
+    finally:
+        for p in (pdf_part, zip_part):
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+    prune_exports(out_dir, keep={base_name})
+    return result
+
+
+def _render_all(pages: List[dict], scale: float, resolve, page_numbers: bool,
+                opts: ExportOptions) -> Iterator[Tuple[dict, Image.Image]]:
+    """Render one page at a time: a long export must never hold every page
+    image in memory at once."""
+    for i, page in enumerate(pages):
+        s = opts.page_scale(page, scale)
+        img = render_page(page, s, resolve)
+        if page_numbers:
+            _stamp_page_number(img, i, s)
+        yield page, img
 
 
 def export_pages_to_bytes(pages: List[dict], fmt: str, scale: float,
-                          resolve, page_numbers: bool = False) -> dict:
+                          resolve, page_numbers: bool = False,
+                          opts: Optional[ExportOptions] = None) -> dict:
     """fmt ∈ pdf|zip|both → {"pdf": bytes|None, "zip": bytes|None}."""
-    if fmt not in ("pdf", "zip", "both"):
-        raise ValueError(f"unknown export format: {fmt}")
-    pdf_buf = io.BytesIO() if fmt in ("pdf", "both") else None
-    zip_buf = io.BytesIO() if fmt in ("zip", "both") else None
-    pdf = PdfWriter(pdf_buf) if pdf_buf else None
-    # PNGs are already deflate-compressed: store them, don't re-compress
-    zf = zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_STORED) if zip_buf else None
+    want_pdf, want_zip = _formats(fmt)
+    opts = (opts or ExportOptions()).validate()
+    pdf_buf = io.BytesIO() if want_pdf else None
+    zip_buf = io.BytesIO() if want_zip else None
+    sink = ExportSink(pdf_buf, zip_buf, opts)
     try:
-        for i, page, img in _iter_pages(pages, scale, resolve, page_numbers):
-            if pdf:
-                pdf.add(img, page)
-            if zf:
-                zf.writestr(f"page_{i + 1:03d}.png", _png_bytes(img))
+        for page, img in _render_all(pages, scale, resolve, page_numbers, opts):
+            sink.add(img, page)
             del img
     finally:
-        if zf:
-            zf.close()
-    if pdf:
-        pdf.close()
+        sink.close()
     return {"pdf": pdf_buf.getvalue() if pdf_buf else None,
             "zip": zip_buf.getvalue() if zip_buf else None}
 
 
 def export_pages(pages: List[dict], fmt: str, scale: float, resolve,
                  out_dir: Path, base_name: str,
-                 page_numbers: bool = False) -> dict:
-    """Render + write PNGs/PDF/ZIP; returns paths and /api/export/download URLs."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    png_dir = out_dir / f"{base_name}_pages"
-    png_dir.mkdir(exist_ok=True)
-
-    pdf_path = out_dir / f"{base_name}.pdf"
-    pdf = PdfWriter(str(pdf_path)) if fmt in ("pdf", "both") else None
-    png_files: List[Path] = []
-    for i, page, img in _iter_pages(pages, scale, resolve, page_numbers):
-        f = png_dir / f"page_{i + 1:03d}.png"
-        img.save(f, format="PNG")
-        png_files.append(f)
-        if pdf:
-            pdf.add(img, page)
-        del img   # drop the page before rendering the next one
-    if pdf:
-        pdf.close()
-
-    result: dict = {"pages_dir": str(png_dir)}
-    if pdf:
-        result["pdf"] = {"path": str(pdf_path),
-                         "url": f"/api/export/download/{pdf_path.name}"}
-    if fmt in ("zip", "both"):
-        zip_path = out_dir / f"{base_name}.zip"
-        # build the ZIP from the PNG files just written, stored as-is
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
-            for f in png_files:
-                zf.write(f, f.name)
-        result["zip"] = {"path": str(zip_path),
-                         "url": f"/api/export/download/{zip_path.name}"}
-    prune_exports(out_dir, keep={base_name})
-    return result
+                 page_numbers: bool = False,
+                 opts: Optional[ExportOptions] = None) -> dict:
+    """Render + write <base_name>.pdf/.zip; returns paths and
+    /api/export/download URLs ({pages, pdf?, zip?})."""
+    _formats(fmt)
+    opts = (opts or ExportOptions()).validate()
+    return write_export(_render_all(pages, scale, resolve, page_numbers, opts),
+                        fmt, out_dir, base_name, opts)

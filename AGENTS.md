@@ -329,14 +329,35 @@ curl -s -X POST $BASE/api/assets/file -F file=@dragon_alpha.png -F kind=overlay
 # 9. Export the whole project
 curl -s -X POST $BASE/api/agent/export -H 'Content-Type: application/json' \
   -d "{\"project_id\":\"$PID\",\"format\":\"both\",\"scale\":2,\"page_numbers\":true}"
-# → {"pages_dir": "...", "pdf": {"path": "...", "url": "/api/export/download/..."},
+# → {"pages": N, "pdf": {"path": "...", "url": "/api/export/download/..."},
 #    "zip": {"path": "...", "url": "/api/export/download/..."}}
 #    page_numbers stamps bottom-center numbers on every page but the first.
 # (format "pdf" or "zip" returns only that key; download URLs are same-origin GETs)
-# Once downloaded, delete AutoManga's copy (the file, and its _pages/ folder
-# when no PDF/ZIP of that name is left):
+# Once downloaded, delete AutoManga's copy (the file; exports made before
+# 2026-11-28 also left a _pages/ folder, removed with the last file of its name):
 curl -s -X DELETE $BASE/api/export/download/manga_1a2b3c4d_20261117_120000.pdf
 ```
+
+**Export encoding** (every export: `/api/agent/export`, `/api/render/export`,
+collection export; MCP `export_project`/`export_collection` take
+`image_format`, `quality`, `dpi`):
+
+- `imageFormat`: `"jpeg"` (default) or `"png"`. PDF page images are JPEG at
+  `quality` (1-100, default 85), embedded as-is (DCTDecode). That is about a
+  tenth of the size of `"png"` (lossless Flate), with no visible difference
+  (46 dB luma PSNR on a real Comics page). An 87-page, 1650 px collection
+  went from 1.65 GB to roughly 160 MB.
+- `zipFormat`: `"png"` (default), `"webp"` (lossless, smaller) or `"jpeg"`.
+  ZIP entries are `page_001.<ext>`, stored, written straight into the ZIP
+  (no `_pages/` folder any more, no `pages_dir` in the response).
+- PDF pages are `pdfWidthIn` inches wide (default 6.625, US comic trim), the
+  height from the page's aspect ratio. They used to be 1 pt per page pixel
+  (a 1650 px page was 23 inches wide).
+- `dpi` (36-1200, optional): render every page at the scale that gives this
+  many pixels per inch at `pdfWidthIn`, whatever its pixel width (600 px and
+  1650 px pages come out the same size). Overrides `scale`.
+- Files are written as hidden `.<name>.part` and renamed when complete.
+  An invalid option is a 400.
 
 Exports are pruned on every new export: `data/exports/` keeps nothing older
 than 7 days and at most the 20 newest exports per project (grouped by the
