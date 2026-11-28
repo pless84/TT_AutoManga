@@ -9,7 +9,9 @@ import { BatchReview } from './BatchReview';
 import { applyAccepted, finished, mergeBatch, type Batch, type BatchResult } from './batchApply';
 import { toApply, useBatchReview } from './batchDecisions';
 import { parseOutline, targetAt, targetLabel, type OutlineEntry, type OutlineKind, type OutlineWords } from './outline';
-import { useComicsDrafts, openedDraft, isDirty } from './scriptDrafts';
+import { useComicsDrafts, openedDraft, isDirty, draftText } from './scriptDrafts';
+import { LiveText, RunClock, RunLog, ScriptEditor } from './ComicsParts';
+import { usePoll } from '../../hooks/usePoll';
 import { comicFiles, postUpload, uploaded, uploadSummary, type UploadResult } from './comicsUpload';
 import { fill, useTranslation } from '../../hooks/useTranslation';
 import { useTips } from '../../hooks/useTips';
@@ -199,12 +201,12 @@ export function ComicsTab() {
   const [scripts, setScripts] = useState<Script[]>([]);
   const [comicsDir, setComicsDir] = useState('');
   const [listError, setListError] = useState<string | null>(null);
-  // the open script and its editor text live in a store: they survive tab and script switches
+  // the open script and its editor text live in a store: they survive tab and script switches. The tab doesn't
+  // subscribe to the text itself (each keystroke would re-render all of it): ScriptEditor / LiveText show it,
+  // handlers read it with draftText(), the outline and the plan check follow it debounced.
   const selected = useComicsDrafts(s => s.selected);
   const setDraft = useComicsDrafts(s => s.setDraft);
-  const draft = useComicsDrafts(s => (s.selected ? s.drafts[s.selected] : undefined));
-  const text = draft?.text ?? '';
-  const savedText = draft?.savedText ?? '';
+  const dirty = useComicsDrafts(s => isDirty(s.selected ? s.drafts[s.selected] : undefined));
   const setText = (value: string) => { if (selected) setDraft(selected, { text: value }); };
   const [viewState, setView] = useState<View>('script');
   const [face, setFace] = useState(false);
@@ -224,7 +226,6 @@ export function ComicsTab() {
   const [planText, setPlanText] = useState<string | null>(null);   // the editor text the plan was made from
   const [planTick, setPlanTick] = useState(0);   // bump to re-plan the same text (after a run, a pin)
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const logRef = useRef<HTMLPreElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const runRef = useRef<Run | null>(null);
   useEffect(() => { runRef.current = run; }, [run]);
@@ -258,41 +259,37 @@ export function ComicsTab() {
     fetch(BATCH_URL).then(r => (r.ok ? r.json() : null)).then(d => { if (d) setBatch(d.batch ?? null); }).catch(() => {});
   }, []);
   const batchRunning = batch?.status === 'running';
-  const batchId = batch?.id;
-  useEffect(() => {
-    if (!batchRunning) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const poll = async () => {
-      const cur = batchRef.current;
-      if (!cur || cancelled) return;
-      try {
-        const { batch: next } = await json<{ batch: Batch | null }>(await fetch(`${BATCH_URL}?since=${cur.seq}`));
-        if (cancelled) return;
-        const merged = mergeBatch(cur, next);
-        setBatch(merged);
-        if (!merged || merged.id !== cur.id || merged.status !== 'running') return;
-      } catch { /* the server restarts now and then; keep polling */ }
-      if (!cancelled) timer = setTimeout(poll, BATCH_POLL_MS);
-    };
-    timer = setTimeout(poll, BATCH_POLL_MS);
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [batchRunning, batchId]);
+  usePoll(async (signal) => {
+    const cur = batchRef.current;
+    if (!cur) return;
+    try {
+      const { batch: next } = await json<{ batch: Batch | null }>(await fetch(`${BATCH_URL}?since=${cur.seq}`));
+      if (!signal.aborted) setBatch(mergeBatch(cur, next));
+    } catch { /* the server restarts now and then; keep polling */ }
+  }, BATCH_POLL_MS, { enabled: batchRunning });
 
   // the outline: parsed from the editor text 200 ms after the last keystroke, the caret's entry 150 ms after it moves
-  const [outlineText, setOutlineText] = useState(text);
+  const [outlineText, setOutlineText] = useState(draftText);
   useEffect(() => {
-    const timer = setTimeout(() => setOutlineText(text), 200);
-    return () => clearTimeout(timer);
-  }, [text]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let last = draftText();
+    const unsubscribe = useComicsDrafts.subscribe(() => {
+      const next = draftText();
+      if (next === last) return;
+      last = next;
+      clearTimeout(timer);
+      timer = setTimeout(() => setOutlineText(next), 200);
+    });
+    return () => { clearTimeout(timer); unsubscribe(); };
+  }, []);
   const outline = useMemo(() => parseOutline(outlineText), [outlineText]);
   const [caretPos, setCaretPos] = useState(0);
   const caretTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (caretTimer.current) clearTimeout(caretTimer.current); }, []);
-  const trackCaret = () => {
+  const trackCaret = useCallback(() => {
     if (caretTimer.current) clearTimeout(caretTimer.current);
     caretTimer.current = setTimeout(() => setCaretPos(editorRef.current?.selectionStart ?? 0), 150);
-  };
+  }, []);
   const [outlineOpen, setOutlineOpen] = useState(() => readStored(OUTLINE_OPEN_KEY) !== '0');
   const [outlineMode, setOutlineMode] = useState<OutlineKind>(() => {
     const m = readStored(OUTLINE_MODE_KEY);
@@ -306,19 +303,11 @@ export function ComicsTab() {
     page: c.outlinePage, uncutPage: c.outlineUncutPage, noPlace: c.outlineNoPlace, panel: c.outlinePanel, scene: c.outlineScene,
   }), [c]);
 
-  const dirty = text !== savedText;
   // the plan was made from other text (typing, or the 600 ms check hasn't caught up): its line numbers
   // and panel ids may be off, so the buttons acting on them wait for the next check
-  const planStale = planText !== text;
+  const planStale = useComicsDrafts(s => planText !== (s.selected ? s.drafts[s.selected]?.text ?? '' : ''));
   const current = scripts.find(s => s.name === selected) || null;
   const running = run?.status === 'running';
-  // the run's elapsed time ticks from a clock state, not a Date.now() during render
-  const [now, setNow] = useState(() => Date.now() / 1000);
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
   const runIsHere = run && run.script === selected;
 
   const loadScripts = useCallback(async () => {
@@ -371,55 +360,50 @@ export function ComicsTab() {
     })().catch(e => setError((e as Error).message));
   }, [loadScripts, openScript]);
 
-  // follow the run's log while it runs. A setTimeout chain (not setInterval)
-  // so one poll's response always lands before the next request goes out.
-  useEffect(() => {
-    if (!running) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+  // follow the run's log while it runs (usePoll: one poll's response always lands before the next request
+  // goes out; paused while the page is hidden). A poll with nothing new leaves the run as it is.
+  usePoll(async (signal) => {
     const finished = (r: Run) => {
       loadScripts(); setPlanTick(t => t + 1);
       // the pages of the run's script, if it is still the one open
       if (r.script === selectedRef.current) loadPages(r.script);
       if (r.mode === 'repaint' || r.mode === 'variants') setView(v => (v === 'log' && r.status === 'done' ? 'panels' : v));
     };
-    const poll = async () => {
-      const r = runRef.current;
-      if (!r || cancelled) return;
-      try {
-        const { run: next } = await json<{ run: Run | null }>(await fetch(`/api/comics/runs/current?since=${r.next}`));
-        if (cancelled) return;
-        if (next && next.id === r.id) {
-          setRun({ ...next, lines: capLog([...r.lines, ...next.lines]) });
-          if (next.status !== 'running') { finished(next); return; }
+    const r = runRef.current;
+    if (!r) return;
+    try {
+      const { run: next } = await json<{ run: Run | null }>(await fetch(`/api/comics/runs/current?since=${r.next}`));
+      if (signal.aborted) return;
+      if (next && next.id === r.id) {
+        const changed = next.lines.length > 0 || next.status !== r.status || next.next !== r.next
+          || next.ended !== r.ended || next.exit_code !== r.exit_code || next.project_id !== r.project_id;
+        if (changed) setRun({ ...next, lines: capLog([...r.lines, ...next.lines]) });
+        if (next.status !== 'running') { finished(next); return; }
+      } else {
+        // the server no longer reports this run as current: it has ended.
+        // Refresh once (full log); if it's still unknown, give up on it.
+        const { run: full } = await json<{ run: Run | null }>(await fetch('/api/comics/runs/current'));
+        if (signal.aborted) return;
+        if (full && full.id === r.id) {
+          setRun({ ...full, lines: capLog(full.lines) });
+          if (full.status !== 'running') { finished(full); return; }
         } else {
-          // the server no longer reports this run as current: it has ended.
-          // Refresh once (full log); if it's still unknown, give up on it.
-          const { run: full } = await json<{ run: Run | null }>(await fetch('/api/comics/runs/current'));
-          if (cancelled) return;
-          if (full && full.id === r.id) {
-            setRun({ ...full, lines: capLog(full.lines) });
-            if (full.status !== 'running') { finished(full); return; }
-          } else {
-            setRun({
-              ...r,
-              status: 'failed',
-              ended: r.ended ?? Date.now() / 1000,
-              lines: [...r.lines, '[the server lost track of this run]'],
-            });
-            setError('The server lost track of this run');
-            finished(r);
-            return;
-          }
+          setRun({
+            ...r,
+            status: 'failed',
+            ended: r.ended ?? Date.now() / 1000,
+            lines: [...r.lines, '[the server lost track of this run]'],
+          });
+          setError('The server lost track of this run');
+          finished(r);
+          return;
         }
-      } catch { /* the server restarts now and then; keep polling */ }
-      if (!cancelled) timer = setTimeout(poll, 1000);
-    };
-    timer = setTimeout(poll, 1000);
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [running, loadScripts, loadPages]);
+      }
+    } catch { /* the server restarts now and then; keep polling */ }
+  }, 1000, { enabled: running });
 
-  // live check: comic.js --plan on the editor text, 600 ms after the last keystroke; a newer request aborts an older
+  // live check: comic.js --plan on the editor text, 600 ms after the last keystroke (the outline's 200 ms debounce,
+  // then 400 ms); a newer request aborts an older
   useEffect(() => {
     if (!selected) return;
     const ctl = new AbortController();
@@ -427,26 +411,22 @@ export function ComicsTab() {
       try {
         const p = await json<Plan>(await fetch(`/api/comics/scripts/${selected}/plan`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, face, uncut }), signal: ctl.signal,
+          body: JSON.stringify({ text: outlineText, face, uncut }), signal: ctl.signal,
         }));
-        if (!ctl.signal.aborted) { setPlan(p); setPlanText(text); }
+        if (!ctl.signal.aborted) { setPlan(p); setPlanText(outlineText); }
       } catch (e) {
-        if (!ctl.signal.aborted) { setPlan({ ok: false, error: (e as Error).message, line: null }); setPlanText(text); }
+        if (!ctl.signal.aborted) { setPlan({ ok: false, error: (e as Error).message, line: null }); setPlanText(outlineText); }
       }
-    }, 600);
+    }, 400);
     return () => { clearTimeout(timer); ctl.abort(); };
-  }, [selected, text, face, uncut, planTick]);
+  }, [selected, outlineText, face, uncut, planTick]);
 
   // another edition: its pages (its panel ids are its own too: the toggle clears the selection)
   useEffect(() => {
     if (selectedRef.current) loadPages(selectedRef.current);
   }, [uncut, loadPages]);
 
-  useEffect(() => {
-    if (view === 'log' && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [run?.lines.length, view]);
-
-  const save = async (body = text) => {
+  const save = async (body = draftText()) => {
     if (!selected) return false;
     const name = selected;   // the script being saved, even if another is opened meanwhile
     try {
@@ -483,7 +463,7 @@ export function ComicsTab() {
     setError(null);
     if (planStale) { setError(`${p.id}: the script changed since the check; wait for it to catch up`); return; }
     let next: string;
-    try { next = pinSeed(text, p, seed); } catch (e) { setError(`${p.id}: ${(e as Error).message}; wait for the check to catch up`); return; }
+    try { next = pinSeed(draftText(), p, seed); } catch (e) { setError(`${p.id}: ${(e as Error).message}; wait for the check to catch up`); return; }
     setText(next);
     if (await save(next)) setPlanTick(t => t + 1);
   };
@@ -529,14 +509,31 @@ export function ComicsTab() {
   const aiAtCaret = (kind: 'panel' | 'scene') => {
     const ed = editorRef.current;
     const caret = ed?.selectionStart ?? 0;
-    const tgt = targetAt(parseOutline(text), caret, kind);
+    const tgt = targetAt(parseOutline(draftText()), caret, kind);
     aiOn(kind, tgt?.entry ?? null, caret);
   };
+
+  // the memoised editor's keys: Cmd/Ctrl+S saves, the AI shortcuts open the popover (latest handler through a ref)
+  const editorKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 's') {
+      e.preventDefault();
+      if (dirty && !(running && runIsHere)) save();   // the Save button's own check
+      return;
+    }
+    const sc = shortcutOf(e);
+    if (sc) {
+      e.preventDefault();
+      aiAtCaret(sc);
+    }
+  };
+  const editorKeyRef = useRef(editorKey);
+  useEffect(() => { editorKeyRef.current = editorKey; });
+  const onEditorKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => editorKeyRef.current(e), []);
 
   /** The Panels view's "AI rewrite": the plan panel's block in the script (by its line while the plan is current,
       else by its id). */
   const aiOnPlanPanel = (p: PlanPanel) => {
-    const o = parseOutline(text);
+    const o = parseOutline(draftText());
     const entry = (!planStale && o.panels.find(x => x.line === p.line)) || o.panels.find(x => x.id === p.id) || null;
     if (entry) aiOn('panel', entry);
     else setError(`${p.id}: not found in the script; wait for the check to catch up`);
@@ -553,6 +550,7 @@ export function ComicsTab() {
   };
 
   const acceptAi = (start: number, end: number, replacement: string) => {
+    const text = draftText();
     setText(text.slice(0, start) + replacement + text.slice(end));
     setAi(null);
     setAiLocked(false);
@@ -679,7 +677,7 @@ export function ComicsTab() {
       skipped and named. */
   const applyBatch = (results: BatchResult[]) => {
     if (!batch || !selected) return;
-    const report = applyAccepted(text, results);
+    const report = applyAccepted(draftText(), results);
     if (report.applied.length) {
       setText(report.text);
       useBatchReview.getState().markApplied(batch.id, report.applied);
@@ -705,7 +703,6 @@ export function ComicsTab() {
   const shortcutHint = fill(c.aiShortcuts, { panel: SHORTCUTS.panel.label, scene: SHORTCUTS.scene.label });
   const projectId = (runIsHere && Boolean(run?.uncut) === uncut && run?.project_id)
     || (uncut ? current?.uncut_project_id : current?.project_id) || null;
-  const elapsed = run ? Math.round(((run.ended ?? Math.max(now, run.started)) - run.started)) : 0;
   const planPanels = plan?.ok ? plan.panels : [];
   const stale = planPanels.filter(p => p.painted && !p.current).length;
   const unpainted = planPanels.filter(p => !p.painted).length;
@@ -835,7 +832,7 @@ export function ComicsTab() {
                   {MODE_LABEL[run.mode]}{run.face ? ' + face pass' : ''}{run.uncut ? ` · ${t.comics.uncutEdition}` : ''}: {
                     run.status === 'running' ? (progress ? `painting ${progress.done}/${progress.total}` : 'running')
                       : run.status === 'done' ? 'done' : run.status === 'stopped' ? 'stopped' : `failed (exit ${run.exit_code})`
-                  } · {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
+                  } · <RunClock started={run.started} ended={run.ended} />
                 </span>
                 {progress && run.status === 'running' && (
                   <div className="comics-progress"><div style={{ width: `${(100 * progress.done) / progress.total}%` }} /></div>
@@ -882,45 +879,31 @@ export function ComicsTab() {
                   aiBlocked={!llmReady ? c.aiNoLlm : aiLocked ? c.aiLocked : null}
                   onPick={onOutlinePick} onAi={onOutlineAi} onBatch={onOutlineBatch} batchBlocked={batchBlocked} />
                 <div className="comics-editor-wrap">
-                  <textarea
-                    ref={editorRef}
-                    className="comics-editor"
-                    spellCheck={false}
-                    value={text}
-                    aria-label={current.name}
-                    onChange={e => setText(e.target.value)}
-                    onSelect={trackCaret}
-                    onKeyDown={e => {
-                      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 's') {
-                        e.preventDefault();
-                        if (dirty && !scriptBusy) save();   // the Save button's own check
-                        return;
-                      }
-                      const sc = shortcutOf(e);
-                      if (sc) {
-                        e.preventDefault();
-                        aiAtCaret(sc);
-                      }
-                    }}
-                  />
+                  <ScriptEditor editorRef={editorRef} label={current.name} onSelect={trackCaret} onKeyDown={onEditorKey} />
                   {ai && (
-                    <AiRewrite key={`${current.name}:${ai.seq}`} script={current.name} text={text} caret={ai} model={llm?.model ?? ''}
-                      target={ai.target} words={words} onLockChange={onAiLock}
-                      onAccept={acceptAi}
-                      onClose={block => { setAi(null); setAiLocked(false); focusEditor(block?.start ?? ai.start); }} />
+                    <LiveText>{text => (
+                      <AiRewrite key={`${current.name}:${ai.seq}`} script={current.name} text={text} caret={ai} model={llm?.model ?? ''}
+                        target={ai.target} words={words} onLockChange={onAiLock}
+                        onAccept={acceptAi}
+                        onClose={block => { setAi(null); setAiLocked(false); focusEditor(block?.start ?? ai.start); }} />
+                    )}</LiveText>
                   )}
                 </div>
               </div>
             )}
             {batchDialog && (
-              <BatchDialog text={text} words={words} model={llm?.model ?? ''} blocked={batchBlocked}
-                replaces={batchUnapplied} onStart={startBatch} onClose={() => setBatchDialog(false)} />
+              <LiveText>{text => (
+                <BatchDialog text={text} words={words} model={llm?.model ?? ''} blocked={batchBlocked}
+                  replaces={batchUnapplied} onStart={startBatch} onClose={() => setBatchDialog(false)} />
+              )}</LiveText>
             )}
             {view === 'batch' && batchHere && (
-              <BatchReview batch={batchHere} editorText={text} onApply={applyBatch} onStop={stopBatch} onClear={clearBatch} />
+              <LiveText>{text => (
+                <BatchReview batch={batchHere} editorText={text} onApply={applyBatch} onStop={stopBatch} onClear={clearBatch} />
+              )}</LiveText>
             )}
             {view === 'log' && runIsHere && run && (
-              <pre className="comics-log" ref={logRef}>{run.lines.join('\n')}</pre>
+              <RunLog lines={run.lines} />
             )}
             {view === 'pages' && (
               pages.length ? (
