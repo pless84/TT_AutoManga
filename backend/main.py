@@ -19,6 +19,7 @@ from .api import training as training_api
 from .api import collections as collections_api
 from .core import auth as auth_core
 from .core.config import BASE_DIR, DATA_DIR, PROJECTS_DIR, ASSETS_DIR
+from .storage.manager import InvalidProjectIdError, ProjectNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,27 @@ def _finite(value):
 async def _validation_error(request: Request, exc: RequestValidationError):
     return JSONResponse(status_code=422,
                         content={"detail": _finite(jsonable_encoder(exc.errors()))})
+
+
+# Handlers let storage errors propagate: an unsafe project id is a 400 and a
+# missing project a 404 wherever they come from.
+@app.exception_handler(InvalidProjectIdError)
+async def _invalid_project_id(request: Request, exc: InvalidProjectIdError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(ProjectNotFoundError)
+async def _project_not_found(request: Request, exc: ProjectNotFoundError):
+    return JSONResponse(status_code=404, content={"detail": "Project not found"})
+
+
+@app.exception_handler(Exception)
+async def _internal_error(request: Request, exc: Exception):
+    """Anything a handler did not map: the traceback goes to the log, the
+    client gets a bare 500 (no exception text, paths or internals)."""
+    logger.error("unhandled error on %s %s: %r", request.method, request.url.path, exc,
+                 exc_info=(type(exc), exc, exc.__traceback__))
+    return JSONResponse(status_code=500, content={"detail": "internal error"})
 
 
 # No CORS middleware: the backend serves the UI itself (same origin) and the

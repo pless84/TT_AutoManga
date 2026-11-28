@@ -1,9 +1,7 @@
 """Per-project locking for API handlers that load, modify and save a project."""
 import functools
 
-from fastapi import HTTPException
-
-from ..storage.manager import InvalidProjectIdError, storage
+from ..storage.manager import storage
 
 
 def locked_project(handler):
@@ -21,10 +19,6 @@ def locked_project(handler):
                     break
         if not pid:
             return handler(*args, **kwargs)
-        try:
-            lk = storage.lock(pid)
-        except InvalidProjectIdError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        with lk:
+        with storage.lock(pid):   # an unsafe id: InvalidProjectIdError, a 400
             return handler(*args, **kwargs)
     return wrapper

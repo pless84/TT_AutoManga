@@ -27,8 +27,4 @@ async def generate_storyboard(req: GenerateRequest):
     llm = client.for_request(req.endpoint, req.api_key, model=req.model,
                              temperature=req.temperature, thinking=req.thinking)
 
-    try:
-        result = await llm.generate_storyboard(req.text, req.detail_level)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await llm.generate_storyboard(req.text, req.detail_level)

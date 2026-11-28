@@ -268,11 +268,8 @@ def _panel_bytes(ref: str) -> Optional[bytes]:
 @router.post("/datasets/{slug}/import")
 async def import_panels(slug: str, req: ImportPanelsRequest):
     _meta(slug)
-    from ..storage.manager import InvalidProjectIdError, storage
-    try:
-        project = storage.load_project(req.projectId)
-    except InvalidProjectIdError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    from ..storage.manager import storage
+    project = await asyncio.to_thread(storage.load_project, req.projectId)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
     wanted = set(req.panelIds)

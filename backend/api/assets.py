@@ -65,35 +65,30 @@ async def register_asset(
 ):
     """Register arbitrary image bytes as a reusable asset (e.g. agent-side
     post-processing output) without binding it to a panel."""
-    try:
-        contents = await file.read()
-        ext = (file.content_type or "image/png").split("/")[-1]
-        entry = asset_store.save_bytes(contents, ext=ext,
-                                       project_id=project_id or None, kind=kind)
-        return JSONResponse({
-            "success": True,
-            "asset_id": entry["asset_id"],
-            "url": asset_store.url_for(entry["asset_id"]),
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    contents = await file.read()
+    ext = (file.content_type or "image/png").split("/")[-1]
+    entry = await asyncio.to_thread(asset_store.save_bytes, contents, ext=ext,
+                                    project_id=project_id or None, kind=kind)
+    return JSONResponse({
+        "success": True,
+        "asset_id": entry["asset_id"],
+        "url": asset_store.url_for(entry["asset_id"]),
+    })
 
 
 @router.post("/upload/{project_id}/{panel_id}")
 async def upload_image(project_id: str, panel_id: str, file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        ext = (file.content_type or "image/png").split("/")[-1]
-        entry = asset_store.save_bytes(contents, ext=ext, project_id=project_id, kind="upload")
-        url = asset_store.url_for(entry["asset_id"])
-        await asyncio.to_thread(bind_panel_image, project_id, panel_id, url)
-        return JSONResponse({
-            "success": True,
-            "image": url,
-            "asset_id": entry["asset_id"],
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    contents = await file.read()
+    ext = (file.content_type or "image/png").split("/")[-1]
+    entry = await asyncio.to_thread(asset_store.save_bytes, contents, ext=ext,
+                                    project_id=project_id, kind="upload")
+    url = asset_store.url_for(entry["asset_id"])
+    await asyncio.to_thread(bind_panel_image, project_id, panel_id, url)
+    return JSONResponse({
+        "success": True,
+        "image": url,
+        "asset_id": entry["asset_id"],
+    })
 
 
 @router.post("/swarmui/generate")

@@ -137,22 +137,19 @@ async def generate_character_image(req: GenerateCharacterImageRequest):
     if rated["notice"]:
         logging.info("character sheet %s: %s", req.character_id, rated["notice"])
 
-    try:
-        result = await swarm_client.generate_image(
-            prompt=rated["prompt"],
-            negative_prompt=rated["negative"],
-            model=swarmsettings.currentModel or None,
-            steps=swarmsettings.currentSteps,
-            cfg_scale=swarmsettings.currentCfgScale,
-            width=swarmsettings.currentWidth,
-            height=swarmsettings.currentHeight,
-            sampler_name=swarmsettings.currentSamplerName,
-            loras=loras,
-            seed=req.seed
-        )
-        result["content_rating"] = rated["rating"]
-        if rated["notice"]:
-            result["notice"] = rated["notice"]
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    result = await swarm_client.generate_image(
+        prompt=rated["prompt"],
+        negative_prompt=rated["negative"],
+        model=swarmsettings.currentModel or None,
+        steps=swarmsettings.currentSteps,
+        cfg_scale=swarmsettings.currentCfgScale,
+        width=swarmsettings.currentWidth,
+        height=swarmsettings.currentHeight,
+        sampler_name=swarmsettings.currentSamplerName,
+        loras=loras,
+        seed=req.seed
+    )
+    result["content_rating"] = rated["rating"]
+    if rated["notice"]:
+        result["notice"] = rated["notice"]
+    return result

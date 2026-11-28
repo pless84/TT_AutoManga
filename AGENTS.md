@@ -609,7 +609,10 @@ before SwarmUI is called.
 - FastAPI standard errors: `{"detail": "..."}`. 404 unknown project/page/
   element/job/asset; 400 validation (bad template, coordinates outside 0-100,
   duplicate panel ids, empty scene, unsafe id); 502 upstream LLM/SwarmUI
-  failure.
+  failure. An unsafe project id is a 400 and a missing project a 404 on
+  every endpoint. Any other unexpected error is a 500 `{"detail":
+  "internal error"}`, never the exception text; the traceback is in the
+  server log (`backend.main`, "unhandled error on <method> <path>").
 - Panel ids are auto-filled as `panel_1..panel_n` when omitted; ids must be
   unique and `scene` non-empty.
 - Project/folder ids become directory names on disk, so they must match

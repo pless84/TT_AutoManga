@@ -111,10 +111,7 @@ def _project_stats(project: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _load_or_404(project_id: str) -> Dict[str, Any]:
-    try:
-        project = storage.load_project(project_id)
-    except InvalidProjectIdError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    project = storage.load_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project

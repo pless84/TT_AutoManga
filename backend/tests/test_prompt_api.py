@@ -62,10 +62,11 @@ def test_enhance_logs_incoming_request(caplog):
 
 def test_enhance_logs_when_llm_fails(caplog):
     """When the LLM call raises, the route must log the failure with enough
-    context to diagnose. Today it just raises HTTPException(500) and the
-    server log is silent unless the user enables uvicorn logging manually."""
-    caplog.set_level(logging.ERROR, logger="backend.api.prompt")
-    tc = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000))
+    context to diagnose (the global handler in backend/main.py), and the
+    client gets a bare 500 without the exception text."""
+    caplog.set_level(logging.ERROR)
+    tc = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000),
+                    raise_server_exceptions=False)
     with patch(
         "backend.core.openai_client.OpenAIClient.enhance_prompt",
         new=AsyncMock(side_effect=RuntimeError("API Error 401: bad key")),
@@ -81,7 +82,7 @@ def test_enhance_logs_when_llm_fails(caplog):
             },
         )
     assert r.status_code == 500
-    body = r.json()
+    assert r.json() == {"detail": "internal error"}
     error_records = [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
     assert any("401" in rec.getMessage() or "api error" in rec.getMessage().lower()
                for rec in error_records), (
