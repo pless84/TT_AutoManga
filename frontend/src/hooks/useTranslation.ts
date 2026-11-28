@@ -1,12 +1,21 @@
+import { useEffect, useSyncExternalStore } from 'react';
 import { useProjectStore } from '../store/projectStore';
-import { translations } from '../i18n';
+import { loadTranslations, subscribeTranslations, translationsFor } from '../i18n';
 import type { TranslationKeys } from '../i18n';
+
+/** A language's UI text: English until a lazily loaded language arrives, then a re-render. */
+export function useTranslationsFor(language: string): TranslationKeys {
+  const t = useSyncExternalStore(subscribeTranslations, () => translationsFor(language));
+  useEffect(() => {
+    if (language !== 'en') loadTranslations(language).catch(console.error);
+  }, [language]);
+  return t;
+}
 
 export function useTranslation() {
   const language = useProjectStore((state) => state.settings.language) || 'en';
-  
-  const t = translations[language as keyof typeof translations] as TranslationKeys;
-  
+  const t = useTranslationsFor(language);
+
   return {
     t,
     language,
