@@ -515,6 +515,18 @@ reproducible outside the asset index.
 
 ## 6. Image generation notes
 
+- One generation path: `/api/agent/generate`, `/generate-batch` jobs and the
+  Assets tab's `/api/assets/swarmui/generate` all run
+  `backend/services/generation.py` `generate()` (conditioning, IP-Adapter,
+  content rating, the SwarmUI call, alpha fallback, PNG recipe chunks, the
+  asset store, binding to the panel). The Assets endpoint uses the global
+  settings and skips the style/location/shot/character prompt blocks (its
+  prompt already has them); it answers `{success, image, asset_id, path,
+  content_rating, notice?}`, `image` always an asset URL (also for an unknown
+  project, which is then not bound), and `{success: false, error,
+  content_rating}` with HTTP 200 when SwarmUI fails. A missing `panel_id` on
+  `/api/agent/generate` with `apply_to_panel` is refused (400) before
+  SwarmUI is called.
 - SwarmUI must be reachable at the configured address (`GET
   /api/assets/swarmui/test` to probe). Steps/sampler/LoRA come from global
   settings (`data/settings.json` → `swarmui`); model/loras may be overridden

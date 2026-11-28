@@ -9,7 +9,6 @@ import asyncio
 import base64
 import httpx
 import io
-import json
 import logging
 import time
 import uuid
@@ -30,6 +29,8 @@ from ..render.export_service import export_pages
 from ..render.resolve import make_resolver
 from ..storage.asset_store import asset_store
 from ..storage.manager import storage, InvalidProjectIdError
+from ..services import generation
+from ..services.generation import SHOT_TAGS, ref_to_dataurl
 from .project_lock import locked_project
 
 logger = logging.getLogger(__name__)
@@ -83,10 +84,10 @@ def _validate_panels(panels: List[Dict[str, Any]]) -> None:
         if not (p.get("scene") or "").strip():
             raise HTTPException(status_code=400,
                                 detail="every panel needs a non-empty scene")
-        if p.get("shot") is not None and p["shot"] not in _SHOT_TAGS:
+        if p.get("shot") is not None and p["shot"] not in SHOT_TAGS:
             raise HTTPException(
                 status_code=400,
-                detail=f"shot must be one of {sorted(_SHOT_TAGS)}")
+                detail=f"shot must be one of {sorted(SHOT_TAGS)}")
 
 
 def _project_stats(project: Dict[str, Any]) -> Dict[str, Any]:
@@ -168,10 +169,10 @@ def patch_panel(project_id: str, panel_id: str, updates: Dict[str, Any]):
     if "id" in updates and updates["id"] != panel_id:
         raise HTTPException(status_code=400, detail="cannot change panel id")
     updates.pop("id", None)
-    if updates.get("shot") is not None and updates["shot"] not in _SHOT_TAGS:
+    if updates.get("shot") is not None and updates["shot"] not in SHOT_TAGS:
         raise HTTPException(
             status_code=400,
-            detail=f"shot must be one of {sorted(_SHOT_TAGS)}")
+            detail=f"shot must be one of {sorted(SHOT_TAGS)}")
     if "scene" in updates and not (updates["scene"] or "").strip():
         raise HTTPException(status_code=400, detail="scene cannot be empty")
     for panel in project.get("panels", []):
@@ -259,275 +260,16 @@ class GenerateRequest(BaseModel):
     inject_characters: bool = True
 
 
-def _ref_to_dataurl(ref: str) -> Optional[str]:
-    """Load an image ref as a data URL. Only data: URLs and managed assets
-    are accepted — an arbitrary filesystem path here would be an
-    unauthenticated local-file read primitive."""
-    try:
-        if ref.startswith("data:"):
-            return ref
-        if ref.startswith("/api/assets/file/"):
-            path = asset_store.path_for(ref.rsplit("/", 1)[-1])
-            if not path:
-                return None
-            import base64 as b64mod
-            mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
-            return f"data:{mime};base64," + b64mod.b64encode(path.read_bytes()).decode()
-        return None
-    except Exception:
-        return None
-
-
-def _embed_png_parameters(img_bytes: bytes, meta: Dict[str, Any]) -> bytes:
-    """Embed the generation recipe as PNG tEXt chunks so exported images
-    stay self-describing outside the asset index: the SD-ecosystem
-    "parameters" text block (prompt / Negative prompt / key: value lines)
-    plus a machine-readable "automanga" JSON block."""
-    try:
-        img = Image.open(io.BytesIO(img_bytes))
-        if (img.format or "").upper() != "PNG":
-            return img_bytes
-        from PIL import PngImagePlugin
-        prompt = meta.get("prompt") or ""
-        negative = meta.get("negative_prompt") or ""
-        settings_line = ", ".join(
-            f"{k}: {v}" for k, v in meta.items()
-            if v is not None and k not in ("prompt", "negative_prompt"))
-        block = "\n".join(x for x in (prompt,
-                                      f"Negative prompt: {negative}" if negative else None,
-                                      settings_line) if x)
-        info = PngImagePlugin.PngInfo()
-        info.add_text("parameters", block)
-        info.add_text("automanga", json.dumps(meta, ensure_ascii=False))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", pnginfo=info)
-        return buf.getvalue()
-    except Exception as e:
-        logger.warning("png parameter embedding skipped: %s", e)
-        return img_bytes
-
-
-async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Core single-request generation shared by /generate and /generate-batch."""
-    prompt = (payload.get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("prompt is required")
-    variants = max(1, min(4, int(payload.get("variants") or 1)))
-    apply_variant = int(payload.get("apply_variant") or 0)
-    if not (0 <= apply_variant < variants):
-        raise ValueError(f"apply_variant must be 0-{variants - 1}")
-    seed = payload.get("seed")
-    swarm_settings = settings.swarmui
-
-    # per-request overrides fall back to global settings
-    model = payload.get("model") or swarm_settings.currentModel or None
-    lora_payload = payload.get("loras")
-    if lora_payload:
-        from ..core.config import LoraConfig
-        loras = [LoraConfig(name=l.get("name", ""), weight=l.get("weight", 1.0))
-                 for l in lora_payload if l.get("name")]
-    elif swarm_settings.currentLoras:
-        # settings loras are LoraConfig models already (put_agent_settings
-        # normalizes) — copy as-is, never dict-style .get() on them
-        loras = [l for l in swarm_settings.currentLoras if l.name]
-    else:
-        loras = None
-
-    init_dataurl = None
-    if payload.get("init_image"):
-        init_dataurl = _ref_to_dataurl(payload["init_image"])
-        if init_dataurl is None:
-            raise ValueError(f"init_image not found: {payload['init_image']}")
-    mask_dataurl = None
-    if payload.get("mask_image"):
-        if not init_dataurl:
-            raise ValueError("mask_image requires init_image")
-        mask_dataurl = _ref_to_dataurl(payload["mask_image"])
-        if mask_dataurl is None:
-            raise ValueError(f"mask_image not found: {payload['mask_image']}")
-
-    # automatic injection: project style suffix + character blocks + LoRAs
-    # (+ a solo panel's character sheet as an IP-Adapter reference)
-    injected = []
-    ref_kwargs: Dict[str, Any] = {}
-    project = None
-    if payload.get("project_id"):
-        project = storage.load_project(payload["project_id"])
-    if payload.get("inject_characters", True) and project:
-        from ..prompting import (apply_conditioning, blocks_for_panel, ipadapter_args,
-                                 location_block_for_panel, reference_for_panel,
-                                 style_suffix)
-        style = style_suffix(project)
-        if style:
-            prompt = f"{prompt}, {style}" if prompt_format_is_tags(payload) else f"{prompt}。{style}"
-            injected.append({"kind": "style", "text": style})
-        panel = None
-        if payload.get("panel_id"):
-            panel = next((p for p in (project.get("panels") or [])
-                          if p.get("id") == payload["panel_id"]), None)
-        if panel:
-            location = location_block_for_panel(project, panel)
-            if location:
-                prompt = f"{prompt}, {location}" if prompt_format_is_tags(payload) else f"{prompt}。{location}"
-                injected.append({"kind": "location", "text": location})
-            shot = panel.get("shot")
-            if shot:
-                extra = _SHOT_TAGS[shot][0 if prompt_format_is_tags(payload) else 1]
-                prompt = f"{prompt}, {extra}" if prompt_format_is_tags(payload) else f"{prompt}。{extra}"
-                injected.append({"kind": "shot", "text": extra})
-            for block in blocks_for_panel(project, panel):
-                prompt = f"{prompt}, {block}" if prompt_format_is_tags(payload) else f"{prompt}。{block}"
-                injected.append({"kind": "character", "text": block})
-            # the panel characters' trained LoRAs + trigger words, merged with the
-            # request/global LoRAs (a panel character's weight wins)
-            prompt, loras, lora_injected = apply_conditioning(
-                prompt, loras, project, panel,
-                sep=", " if prompt_format_is_tags(payload) else "。")
-            injected.extend(lora_injected)
-            # a solo panel's character sheet guides it through IP-Adapter
-            # (the character's refWeight > 0; the sheet itself is not echoed)
-            ref_kwargs = ipadapter_args(reference_for_panel(project, panel))
-            if ref_kwargs:
-                ref_name = next(str(n).strip() for n in panel.get("characters") or [] if str(n).strip())
-                injected.append({"kind": "reference", "name": ref_name,
-                                 "weight": ref_kwargs["ipadapter_weight"],
-                                 "preset": ref_kwargs["ipadapter"]})
-
-    # the content rating (backend/content_rating.py): the project's rating
-    # (else the global default) for this panel's cast; a mature prompt with
-    # minor terms is refused (RatingRefused is a ValueError: HTTP 400)
-    from ..content_rating import apply_rating
-    rating_panel = None
-    if project and payload.get("panel_id"):
-        rating_panel = next((p for p in (project.get("panels") or [])
-                             if p.get("id") == payload["panel_id"]), None)
-    rated = apply_rating(prompt, payload.get("negative_prompt") or "", project=project,
-                         panel=rating_panel, free_prompt=payload.get("prompt") or "",
-                         sep=", " if prompt_format_is_tags(payload) else "。")
-    prompt, negative = rated["prompt"], rated["negative"]
-    injected.append(rated["injected"])
-    if rated["notice"]:
-        logger.info("agent/generate panel=%s: %s", payload.get("panel_id"), rated["notice"])
-
-    assets_out = []
-    for v in range(variants):
-        result = await swarm_client.generate_image(
-            prompt=prompt,
-            negative_prompt=negative,
-            model=model,
-            steps=payload.get("steps") or swarm_settings.currentSteps,
-            cfg_scale=payload.get("cfg_scale") or swarm_settings.currentCfgScale,
-            width=payload.get("width") or swarm_settings.currentWidth,
-            height=payload.get("height") or swarm_settings.currentHeight,
-            sampler_name=swarm_settings.currentSamplerName,
-            loras=loras,
-            seed=(seed + v) if seed is not None else None,
-            remove_background=bool(payload.get("remove_background")),
-            init_image=init_dataurl,
-            init_creativity=payload.get("init_creativity"),
-            mask_image=mask_dataurl,
-            **ref_kwargs,
-        )
-        if not result.get("success"):
-            raise RuntimeError(f"SwarmUI: {result.get('error', 'unknown error')}")
-        img_bytes = base64.b64decode(result["image"].split(",", 1)[1])
-
-        # transparent-background fallback when SwarmUI's remover is broken
-        alpha_method = "swarmui"
-        if payload.get("remove_background"):
-            from ..render.alpha_fallback import ensure_alpha
-            img_bytes, alpha_method = ensure_alpha(img_bytes)
-
-        img_bytes = _embed_png_parameters(img_bytes, {
-            "prompt": prompt,
-            "negative_prompt": negative,
-            "seed": (seed + v) if seed is not None else None,
-            "model": model,
-            "steps": payload.get("steps") or swarm_settings.currentSteps,
-            "cfg_scale": payload.get("cfg_scale") or swarm_settings.currentCfgScale,
-            "sampler": swarm_settings.currentSamplerName,
-            "width": payload.get("width") or swarm_settings.currentWidth,
-            "height": payload.get("height") or swarm_settings.currentHeight,
-            "prompt_format": payload.get("prompt_format"),
-            "kind": payload.get("kind") or "panel",
-            "alpha_method": alpha_method if payload.get("remove_background") else None,
-            "ipadapter": ({"preset": ref_kwargs["ipadapter"], "weight": ref_kwargs["ipadapter_weight"]}
-                          if ref_kwargs else None),
-            "content_rating": rated["rating"],
-        })
-        img = Image.open(io.BytesIO(img_bytes))
-        has_alpha = (img.mode == "RGBA"
-                     and img.getchannel("A").getextrema()[0] < 255)
-        dataurl = "data:image/png;base64," + base64.b64encode(img_bytes).decode()
-        entry = asset_store.save_dataurl(
-            dataurl,
-            project_id=payload.get("project_id") or None,
-            kind=payload.get("kind") or "panel",
-            meta={"prompt": prompt, "seed": (seed + v) if seed is not None else None,
-                  "remove_background": bool(payload.get("remove_background")),
-                  "alpha_method": alpha_method if payload.get("remove_background") else None,
-                  "width": img.size[0], "height": img.size[1],
-                  "has_alpha": has_alpha, "model": model,
-                  "prompt_format": payload.get("prompt_format"),
-                  "negative_prompt": negative,
-                  "content_rating": rated["rating"],
-                  "injected": injected},
-        )
-        assets_out.append({
-            "asset_id": entry["asset_id"],
-            "url": asset_store.url_for(entry["asset_id"]),
-            "width": img.size[0], "height": img.size[1],
-            "has_alpha": has_alpha,
-            "alpha_method": alpha_method if payload.get("remove_background") else None,
-        })
-
-    applied = False
-    if payload.get("apply_to_panel", True) and payload.get("panel_id") \
-            and payload.get("project_id"):
-        panel = next((p for p in (project or {}).get("panels", [])
-                      if p.get("id") == payload["panel_id"]), None) \
-            if project else None
-        if panel is None:
-            raise ValueError(f"panel {payload['panel_id']} not found in "
-                             f"project {payload['project_id']}")
-        from .assets import _save_panel_image
-        await asyncio.to_thread(_save_panel_image, payload["project_id"],
-                                payload["panel_id"], assets_out[apply_variant]["url"])
-        applied = True
-    out = {"assets": assets_out, "applied": applied,
-           "model": model, "injected": injected, "content_rating": rated["rating"]}
-    if rated["notice"]:
-        out["notice"] = rated["notice"]
-    return out
-
-
-# camera-shot descriptors injected into prompts when a panel declares a shot
-_SHOT_TAGS = {
-    "wide": ("wide shot, scenic view, full scenery", "全景远景，展现完整环境"),
-    "medium": ("medium shot, waist up", "中景，半身构图"),
-    "close-up": ("close-up, face focus", "近景特写，聚焦面部"),
-    "extreme-close-up": ("extreme close-up, macro detail", "极致特写，放大细节"),
-    "splash": ("splash illustration, dramatic composition, dynamic angle",
-               "整页大画面，戏剧性构图，充满张力"),
-}
-
-
-def prompt_format_is_tags(payload: Dict[str, Any]) -> bool:
-    """Injection separator: danbooru-style prompts join with ', ', prose joins
-    with '。'. Unspecified formats default to the tag style."""
-    return (payload.get("prompt_format") or "danbooru") != "prose"
-
-
 @router.post("/generate")
 async def agent_generate(req: GenerateRequest):
     logger.info("agent/generate prompt_len=%d variants=%d rm_bg=%s panel=%s",
                 len(req.prompt), req.variants, req.remove_background,
                 req.panel_id)
     try:
-        return await _do_generate(req.model_dump())
+        return await generation.generate(req.model_dump())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
+    except generation.GenerationError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
@@ -552,7 +294,7 @@ async def agent_generate_batch(req: GenerateBatchRequest):
             p["project_id"] = req.project_id
         payloads.append(p)
     # a mature job whose prompt mentions a minor is refused up front (400),
-    # not queued to fail; _do_generate checks every job again when it runs
+    # not queued to fail; generation.generate checks every job again when it runs
     from ..content_rating import RatingRefused, check_prompt, project_rating
     ratings: Dict[str, str] = {}
     for i, p in enumerate(payloads):
@@ -567,7 +309,7 @@ async def agent_generate_batch(req: GenerateBatchRequest):
         except RatingRefused as e:
             raise HTTPException(status_code=400, detail=f"job {i}: {e}")
     job = create_job(payloads, req.concurrency)
-    task = asyncio.create_task(run_job(job.id, _do_generate))
+    task = asyncio.create_task(run_job(job.id, generation.generate))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     from fastapi.responses import JSONResponse
@@ -1210,14 +952,13 @@ async def upscale_asset(req: UpscaleRequest):
     """Upscale an existing asset with a local ONNX model (x4) and register
     the result as a new asset (kind="upscale")."""
     from ..inference import InferenceUnavailable, ModelError, upscale_bytes
-    src = _ref_to_dataurl(req.asset_url)
+    src = await asyncio.to_thread(ref_to_dataurl, req.asset_url)
     if not src:
         raise HTTPException(status_code=400,
                             detail="asset_url must be an asset URL or data: URL")
     try:
         raw = base64.b64decode(src.split(",", 1)[1])
-        out = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: upscale_bytes(raw, req.model, req.tile))
+        out = await asyncio.to_thread(upscale_bytes, raw, req.model, req.tile)
     except InferenceUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
     except ModelError as e:
@@ -1230,9 +971,8 @@ async def upscale_asset(req: UpscaleRequest):
     img = Image.open(io.BytesIO(out))
     from ..inference import INFERENCE_MODELS
     factor = INFERENCE_MODELS[req.model]["scale"]
-    dataurl = "data:image/png;base64," + base64.b64encode(out).decode()
-    entry = asset_store.save_dataurl(
-        dataurl, kind="upscale",
+    entry = await asyncio.to_thread(
+        asset_store.save_bytes, out, ext="png", kind="upscale",
         meta={"source_asset": req.asset_url, "model": req.model,
               "scale": factor, "width": img.size[0], "height": img.size[1]})
     logger.info("agent/upscale model=%s %dx%d -> %dx%d", req.model,

@@ -153,7 +153,9 @@ def env(tmp_path, monkeypatch):
         pass
     e = Env()
     e.c, e.calls, e.config, e.tmp = client, calls, config, tmp_path
-    return e
+    from backend.tests._fixtures import live_loop
+    with live_loop(client):   # batch jobs run on between requests
+        yield e
 
 
 PANELS = [
