@@ -445,26 +445,37 @@ export function ComposerTab() {
   // `pages` reference changes on every edit (immutable updates). It saves 2 s
   // after the last edit, and at least every Settings → Auto-save seconds
   // while edits keep coming (autosaveDelay). A failed save is retried with
-  // backoff until one goes through.
+  // backoff until one goes through. Scheduled from a store subscription, not
+  // from render, so a drag doesn't tear the timer down through React.
   const autoSaveSeconds = useProjectStore(s => s.settings.defaults?.autoSaveInterval);
   const dirtySinceRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!currentProjectId || saveConflict || pages.length === 0) return;
-    if (pages === useComposerStore.getState()._savedPages) { dirtySinceRef.current = null; return; }
-    const now = Date.now();
-    dirtySinceRef.current ??= now;
-    const delay = autosaveDelay({
-      failures: saveFailures, dirtySince: dirtySinceRef.current, now, maxWaitMs: maxWaitMs(autoSaveSeconds),
-    });
-    const id = setTimeout(() => {
-      savePages().then(result => {
-        if (result === 'error') setSaveFailures(n => n + 1);
-        // edits made while the save was in flight are still unsaved: count from now
-        else if (result === 'saved') { setSaveFailures(0); dirtySinceRef.current = hasUnsavedPages(useComposerStore.getState()) ? Date.now() : null; }
+    if (!currentProjectId || saveConflict) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      clearTimeout(timer);
+      const { pages: current, _savedPages } = useComposerStore.getState();
+      if (current.length === 0) return;
+      if (current === _savedPages) { dirtySinceRef.current = null; return; }
+      const now = Date.now();
+      dirtySinceRef.current ??= now;
+      const delay = autosaveDelay({
+        failures: saveFailures, dirtySince: dirtySinceRef.current, now, maxWaitMs: maxWaitMs(autoSaveSeconds),
       });
-    }, delay);
-    return () => clearTimeout(id);
-  }, [pages, currentProjectId, saveConflict, savePages, saveFailures, autoSaveSeconds]);
+      timer = setTimeout(() => {
+        savePages().then(result => {
+          if (result === 'error') setSaveFailures(n => n + 1);
+          // edits made while the save was in flight are still unsaved: count from now
+          else if (result === 'saved') { setSaveFailures(0); dirtySinceRef.current = hasUnsavedPages(useComposerStore.getState()) ? Date.now() : null; }
+        });
+      }, delay);
+    };
+    schedule();
+    const unsubscribe = useComposerStore.subscribe((state, prev) => {
+      if (state.pages !== prev.pages) schedule();
+    });
+    return () => { clearTimeout(timer); unsubscribe(); };
+  }, [currentProjectId, saveConflict, savePages, saveFailures, autoSaveSeconds]);
 
   // a save that failed because the session ended: retry as soon as the user signs in again
   useEffect(() => {

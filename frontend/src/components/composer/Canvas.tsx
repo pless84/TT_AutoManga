@@ -312,6 +312,22 @@ export const Canvas = memo(function Canvas() {
     // one undo step per gesture, recorded on the first real movement so a
     // plain click (select) doesn't leave an empty step behind
     let committed = false;
+    // mousemove fires far more often than the screen repaints: keep only the
+    // latest update and write it to the store once per animation frame
+    let pending: Partial<ComposerElement> | null = null;
+    let frame = 0;
+    const flush = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      if (!pending) return;
+      const updates = pending;
+      pending = null;
+      updateElement(dragState.elementId, updates);
+    };
+    const queue = (updates: Partial<ComposerElement>) => {
+      pending = updates;
+      if (!frame) frame = requestAnimationFrame(flush);
+    };
     const handleMouseMove = (e: MouseEvent) => {
       const canvasEl = canvasRef.current;
       if (!canvasEl) return;
@@ -327,7 +343,7 @@ export const Canvas = memo(function Canvas() {
       if (dragState.mode === 'move') {
         const newX = Math.max(0, Math.min(100 - dragState.origW, dragState.origX + deltaX));
         const newY = Math.max(0, Math.min(100 - dragState.origH, dragState.origY + deltaY));
-        updateElement(dragState.elementId, { x: newX, y: newY });
+        queue({ x: newX, y: newY });
       } else if (dragState.mode === 'resize' && dragState.handle) {
         const minSize = 3;
         const { origX, origY, origW, origH } = dragState;
@@ -349,7 +365,7 @@ export const Canvas = memo(function Canvas() {
           newY = Math.max(0, Math.min(maxY, origY + deltaY));
           newH = origH - (newY - origY);
         }
-        updateElement(dragState.elementId, { x: newX, y: newY, width: newW, height: newH });
+        queue({ x: newX, y: newY, width: newW, height: newH });
       } else if (dragState.mode === 'corner' && dragState.corner && dragState.origCorners) {
         // Convert canvas-percent delta to bounding-box-percent delta
         const dxBbox = (deltaX / dragState.origW) * 100;
@@ -358,7 +374,7 @@ export const Canvas = memo(function Canvas() {
         const c = { ...dragState.origCorners };
         const k = dragState.corner;
         c[k] = { x: clamp(c[k].x + dxBbox), y: clamp(c[k].y + dyBbox) };
-        updateElement(dragState.elementId, { corners: c });
+        queue({ corners: c });
       } else if (dragState.mode === 'tail' && dragState.origTip) {
         // the tip lives in the unrotated box: undo the element's rotation on
         // the drag (in page px, so the page's aspect doesn't skew it)
@@ -368,7 +384,7 @@ export const Canvas = memo(function Canvas() {
         const lx = dxPx * Math.cos(a) - dyPx * Math.sin(a);
         const ly = dxPx * Math.sin(a) + dyPx * Math.cos(a);
         const clamp = (v: number) => Math.max(-8, Math.min(9, v));
-        updateElement(dragState.elementId, {
+        queue({
           tailTip: {
             x: clamp(dragState.origTip.x + lx / ((dragState.origW / 100) * pw)),
             y: clamp(dragState.origTip.y + ly / ((dragState.origH / 100) * ph)),
@@ -379,18 +395,22 @@ export const Canvas = memo(function Canvas() {
         const dxBbox = (deltaX / dragState.origW) * 100;
         const dyBbox = (deltaY / dragState.origH) * 100;
         const clamp = (v: number) => Math.max(-100, Math.min(100, v));
-        updateElement(dragState.elementId, {
+        queue({
           imageOffsetX: clamp((dragState.origOffsetX ?? 0) + dxBbox),
           imageOffsetY: clamp((dragState.origOffsetY ?? 0) + dyBbox),
         } as Partial<ImageElement>);
       }
     };
-    const handleMouseUp = () => setDragState(null);
+    const handleMouseUp = () => {
+      flush();
+      setDragState(null);
+    };
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      flush();
     };
   }, [dragState, updateElement, commit]);
 
