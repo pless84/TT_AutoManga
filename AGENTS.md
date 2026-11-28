@@ -32,6 +32,9 @@ MCP alternative: `python -m backend.mcp_server` exposes the same API as 30
 typed MCP tools (any MCP client; `render_page_preview` returns image
 content). A portable workflow skill lives at `skills/manga-maker/SKILL.md`
 (agentskills.io format).
+Code: `/api/agent/*` lives in the `backend/api/agent/` package
+(`projects.py`, `generate.py`, `pages.py`, `output.py`, helpers in
+`_common.py`); image generation itself is `backend/services/generation.py`.
 
 ### Access (login gate)
 

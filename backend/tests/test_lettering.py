@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 from PIL import Image, ImageChops
 
-from backend.api.agent import _validate_element_payload
+from backend.api.agent.pages import _validate_element_payload
 from backend.render import bubbles
 from backend.render.fonts import get_font_chain
 from backend.render.tails import tail_geometry

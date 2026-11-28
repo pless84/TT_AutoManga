@@ -52,7 +52,7 @@ def client(tmp_path, monkeypatch, library):
 
     import backend.api.agent as agent_mod
     import backend.api.assets as assets_mod
-    for mod in (agent_mod, assets_mod):
+    for mod in (assets_mod,):
         monkeypatch.setattr(mod, "asset_store", store)
     monkeypatch.setattr(settings.swarmui, "currentLoras", [])
     monkeypatch.setattr(settings.swarmui, "promptSuffix", "")

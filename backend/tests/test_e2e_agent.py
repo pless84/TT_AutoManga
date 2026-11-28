@@ -43,15 +43,13 @@ def client(tmp_path, monkeypatch):
     import backend.api.export as export_mod
     tmp_exports = tmp_path / "exports"
     monkeypatch.setattr(export_mod, "EXPORTS_DIR", tmp_exports)
-    # agent.py caches the dir on first use — pre-seed the cache with the tmp one
-    monkeypatch.setattr(agent_mod, "EXPORTS_DIR", tmp_exports)
     # modules holding their own reference to the singleton
     import backend.api.assets as assets_mod
     import backend.api.render as render_mod
     from backend.render.resolve import make_resolver
-    for mod in (agent_mod, assets_mod, render_mod):
+    for mod in (assets_mod, render_mod):
         monkeypatch.setattr(mod, "asset_store", store)
-    for mod in (agent_mod, render_mod):   # modules with a module-level resolver
+    for mod in (render_mod,):   # modules with a module-level resolver
         monkeypatch.setattr(mod, "_resolver", make_resolver(store))
 
     # 2) mock SwarmUI generation
