@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FiLock } from 'react-icons/fi';
-import { translations } from '../../i18n';
-import type { TranslationKeys } from '../../i18n';
-import { fill } from '../../hooks/useTranslation';
+import { fill, useTranslationsFor } from '../../hooks/useTranslation';
 import { googleStartUrl, login, preferredLanguage } from '../../auth';
 import type { AuthStatus, LoginErrorCode } from '../../auth';
 import './login.css';
@@ -36,7 +34,7 @@ interface Props {
 
 export function LoginScreen({ onSuccess, unconfigured = false, overlay = false, status = null, loginError = null }: Props) {
   // shown before /api/settings is readable, so the language comes from the browser
-  const t = (translations[preferredLanguage()] as TranslationKeys).auth;
+  const t = useTranslationsFor(preferredLanguage()).auth;
   const loginErrorText: Record<LoginErrorCode, string> = {
     denied: t.loginErrorDenied,
     not_allowed: t.loginErrorNotAllowed,

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { TOURS, hasTour, nextStep, parseSeen, placePopover, spotlightRect } from './tourLogic';
-import { translations } from '../../i18n';
+import { en } from '../../i18n/en';
+import { zh } from '../../i18n/zh';
+
+const translations = { en, zh };
 
 const vp = { width: 1280, height: 800 };
 const pop = { width: 320, height: 180 };

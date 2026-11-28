@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useEffectEvent } from 'react';
 import { FiSave, FiRefreshCw, FiCheck, FiEye, FiEyeOff, FiX } from 'react-icons/fi';
 import { useProjectStore } from '../../store/projectStore';
 import { useTranslation, fill } from '../../hooks/useTranslation';
@@ -48,8 +48,9 @@ export function SettingsTab() {
   // settings.content.defaultRating; null until loaded (never saved unloaded)
   const [defaultRating, setDefaultRating] = useState<ContentRating | null>(null);
 
+  const loadOnOpen = useEffectEvent(() => { loadSettings(); });
   useEffect(() => {
-    loadSettings();
+    loadOnOpen();
   }, []);
 
   const loadSettings = async () => {

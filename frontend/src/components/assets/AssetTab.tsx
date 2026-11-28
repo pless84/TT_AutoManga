@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useEffectEvent, useMemo } from 'react';
 import { FiUpload, FiRefreshCw, FiImage, FiCheck, FiX, FiAlertCircle, FiZap, FiTag, FiArchive, FiDownload, FiEdit2, FiLayers } from 'react-icons/fi';
 import { useProjectStore } from '../../store/projectStore';
 import { useTranslation } from '../../hooks/useTranslation';
@@ -261,9 +261,10 @@ export function AssetTab() {
   }, [viewMode, currentFolder]);
 
   // loadArchive reads folderSortBy, so reload after the state has changed
+  const reloadArchive = useEffectEvent(() => { loadArchive(); });
   useEffect(() => {
     if (viewMode === 'archive') {
-      loadArchive();
+      reloadArchive();
     }
   }, [viewMode, currentFolder, folderSortBy]);
 

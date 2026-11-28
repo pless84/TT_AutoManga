@@ -3,6 +3,7 @@ import { FiCopy, FiPlay, FiSquare, FiTrash2, FiUpload, FiImage, FiDownload } fro
 import { useProjectStore } from '../../store/projectStore';
 import { useTranslation, fill } from '../../hooks/useTranslation';
 import { useTips } from '../../hooks/useTips';
+import { usePoll } from '../../hooks/usePoll';
 import type { Character } from '../../types';
 import { clampInt } from './clampInt';
 
@@ -148,21 +149,11 @@ export function TrainingPanel({ character }: { character: Character }) {
   const generating = !!dataset?.generation?.running;
   const jobRunning = !!job?.running;
   const slug = dataset?.slug;
-  // while something runs: a setTimeout chain, so a slow response never overlaps the next poll
-  useEffect(() => {
-    if (!jobRunning && !generating) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = async () => {
-      await Promise.all([
-        jobRunning ? pollJob() : null,
-        generating && slug ? loadDataset(slug) : null,
-      ]);
-      if (!cancelled) timer = setTimeout(tick, 3000);
-    };
-    timer = setTimeout(tick, 3000);
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [jobRunning, generating, pollJob, loadDataset, slug]);
+  // while something runs (usePoll: no overlapping polls, paused while the page is hidden)
+  usePoll(() => Promise.all([
+    jobRunning ? pollJob() : null,
+    generating && slug ? loadDataset(slug) : null,
+  ]), 3000, { enabled: jobRunning || generating });
 
   const create = async () => {
     setError(null);

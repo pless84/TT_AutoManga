@@ -33,6 +33,14 @@ export const useComicsDrafts = create<ComicsDrafts>()((set) => ({
   }),
 }));
 
+const openText = (s: ComicsDrafts) => (s.selected ? s.drafts[s.selected]?.text ?? '' : '');
+
+/** The open script's editor text right now (for handlers and timers: no subscription). */
+export const draftText = () => openText(useComicsDrafts.getState());
+
+/** The open script's editor text, re-rendering on every keystroke: only for the parts that show it. */
+export const useDraftText = () => useComicsDrafts(openText);
+
 export const dirtyScripts = () =>
   Object.entries(useComicsDrafts.getState().drafts).filter(([, d]) => isDirty(d)).map(([name]) => name);
 

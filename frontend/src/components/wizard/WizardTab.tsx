@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from 'react';
 import {
   FiArrowLeft, FiArrowRight, FiArrowUp, FiArrowDown, FiCheck, FiDownload, FiUpload, FiUser,
   FiImage, FiLayers, FiPlus, FiRefreshCw, FiTrash2, FiZap, FiEdit3,
@@ -7,6 +7,7 @@ import { useProjectStore } from '../../store/projectStore';
 import { useTranslation, fill } from '../../hooks/useTranslation';
 import { useTips } from '../../hooks/useTips';
 import { useExportScale } from '../../hooks/useExportScale';
+import { usePoll } from '../../hooks/usePoll';
 import type { Panel, Project } from '../../types';
 import { useStoryImport } from '../storyboard/useStoryImport';
 import {
@@ -76,7 +77,9 @@ export function WizardTab() {
     }
   }, [state.projectId, setCurrentProject]);
 
-  useEffect(() => { refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // once on open, with the saved project; later loads are asked for by the steps
+  const refreshOnOpen = useEffectEvent(() => { void refresh(); });
+  useEffect(() => { refreshOnOpen(); }, []);
 
   // the Characters tab's library: picked on Story, offered on Panels, shown on Look
   const [library, setLibrary] = useState<LibraryCharacter[]>([]);
@@ -654,7 +657,6 @@ function ArtStep({ state, project, refresh, run, busy, goTo, w, panels }: StepPr
   const [swarm, setSwarm] = useState<'checking' | 'ok' | 'down'>('checking');
   const [job, setJob] = useState<JobSnap | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
-  const timer = useRef<number | null>(null);
 
   useEffect(() => {
     api<{ connected: boolean }>('/api/assets/swarmui/test')
@@ -662,26 +664,18 @@ function ArtStep({ state, project, refresh, run, busy, goTo, w, panels }: StepPr
       .catch(() => setSwarm('down'));
   }, []);
 
-  useEffect(() => {
-    if (!jobId) return;
-    let stopped = false;
-    const poll = async () => {
-      try {
-        const snap = await api<JobSnap>(`/api/agent/jobs/${jobId}`);
-        if (stopped) return;
-        setJob(snap);
-        await refresh(state.projectId);
-        if (snap.status === 'done') { setJobId(null); return; }
-      } catch {
-        if (stopped) return;
-        setJobId(null);   // server restarted: the job table is gone
-        return;
-      }
-      timer.current = window.setTimeout(poll, 2500);
-    };
-    poll();
-    return () => { stopped = true; if (timer.current) clearTimeout(timer.current); };
-  }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // follow the batch job every 2.5 s (from its start) until it is done
+  usePoll(async (signal) => {
+    try {
+      const snap = await api<JobSnap>(`/api/agent/jobs/${jobId}`);
+      if (signal.aborted) return;
+      setJob(snap);
+      await refresh(state.projectId);
+      if (snap.status === 'done') setJobId(null);
+    } catch {
+      if (!signal.aborted) setJobId(null);   // server restarted: the job table is gone
+    }
+  }, 2500, { enabled: !!jobId, immediate: true });
 
   const generate = (targets: Panel[]) => run('gen', async () => {
     if (!project || !targets.length) return;
