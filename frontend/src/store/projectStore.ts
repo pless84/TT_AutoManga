@@ -1,6 +1,50 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware';
 import type { Panel, Project, AppSettings, TabId, Character } from '../types';
+
+/** localStorage for the persisted slice, written at most every WRITE_MS: every
+ *  set() (each updatePanel while typing, each generated image) would otherwise
+ *  serialize and write all panels. The latest value is kept in memory, read
+ *  back from there, and written when the page is hidden or closed. */
+const WRITE_MS = 500;
+const pendingWrites = new Map<string, unknown>();
+let writeTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function flushPersistedWrites() {
+  if (writeTimer) clearTimeout(writeTimer);
+  writeTimer = null;
+  for (const [name, value] of pendingWrites) {
+    try { localStorage.setItem(name, JSON.stringify(value)); } catch { /* full or blocked: keep the in-memory state */ }
+  }
+  pendingWrites.clear();
+}
+
+function throttledStorage<S>(): PersistStorage<S> {
+  return {
+    getItem: (name) => {
+      if (pendingWrites.has(name)) return pendingWrites.get(name) as StorageValue<S>;
+      try {
+        const raw = localStorage.getItem(name);
+        return raw ? (JSON.parse(raw) as StorageValue<S>) : null;
+      } catch { return null; }
+    },
+    setItem: (name, value) => {
+      pendingWrites.set(name, value);
+      writeTimer ??= setTimeout(flushPersistedWrites, WRITE_MS);
+    },
+    removeItem: (name) => {
+      pendingWrites.delete(name);
+      try { localStorage.removeItem(name); } catch { /* blocked */ }
+    },
+  };
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushPersistedWrites);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPersistedWrites();
+  });
+}
 
 interface ProjectStore {
   currentProject: Project | null;
@@ -189,6 +233,9 @@ export const useProjectStore = create<ProjectStore>()(
     }),
     {
       name: 'automanga-storage',
+      // the backend has the project; this keeps UI preferences and an unsaved
+      // storyboard's text (no images) across a reload, written throttled
+      storage: throttledStorage(),
       partialize: (state) => ({
         settings: state.settings,
         activeTab: state.activeTab,
