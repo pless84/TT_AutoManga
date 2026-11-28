@@ -3,9 +3,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from ..storage.manager import storage, InvalidProjectIdError, pages_base
+from .project_lock import locked_project
 from ..render.bubbles import sanitize_pages
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+
+
 
 
 class Project(BaseModel):
@@ -19,7 +23,7 @@ class Project(BaseModel):
 
 
 @router.get("/")
-async def list_projects():
+def list_projects():
     try:
         projects = storage.list_projects()
         return {"projects": projects}
@@ -28,7 +32,8 @@ async def list_projects():
 
 
 @router.post("/save")
-async def save_project(project: Project):
+@locked_project
+def save_project(project: Project):
     try:
         data = project.model_dump()
         sanitize_pages(data.get("composerPages"))   # tailTip into the renderer's range
@@ -61,7 +66,7 @@ async def save_project(project: Project):
 
 
 @router.get("/load/{project_id}")
-async def load_project(project_id: str):
+def load_project(project_id: str):
     try:
         project = storage.load_project(project_id)
         if project:
@@ -81,7 +86,8 @@ class ComposerPagesUpdate(BaseModel):
 
 
 @router.put("/{project_id}/composer-pages")
-async def put_composer_pages(project_id: str, req: ComposerPagesUpdate):
+@locked_project
+def put_composer_pages(project_id: str, req: ComposerPagesUpdate):
     """Composer autosave: replace ONLY composerPages, with optimistic
     concurrency. ``base`` is the pagesBase from the last load/save; if the
     stored pages changed since (agent API, another tab) the write is
@@ -120,7 +126,7 @@ def project_cover_src(project: Dict[str, Any], page_id: Optional[str] = None) ->
 
 
 @router.get("/covers")
-async def list_project_covers():
+def list_project_covers():
     try:
         projects = storage.list_projects()
         covers = {}
@@ -134,7 +140,8 @@ async def list_project_covers():
 
 
 @router.post("/{project_id}/migrate-assets")
-async def migrate_project_assets(project_id: str):
+@locked_project
+def migrate_project_assets(project_id: str):
     try:
         project = storage.load_project(project_id)
     except InvalidProjectIdError as e:
@@ -146,7 +153,7 @@ async def migrate_project_assets(project_id: str):
 
 
 @router.delete("/delete/{project_id}")
-async def delete_project(project_id: str):
+def delete_project(project_id: str):
     try:
         success = storage.delete_project(project_id)
         if success:

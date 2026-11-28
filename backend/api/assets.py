@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from ..core.swarmui_client import swarm_client
 from ..core.config import settings, LoraConfig
-from ..storage.manager import storage, InvalidProjectIdError
+from ..storage.manager import storage, InvalidProjectIdError, ProjectNotFoundError
 from ..storage.asset_store import asset_store
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
@@ -39,27 +39,26 @@ class UploadRequest(BaseModel):
 
 def _save_panel_image(project_id: str, panel_id: str, image_data: str,
                       meta: Optional[Dict[str, Any]] = None) -> str:
-    """Store panel image reference; returns the final ref (asset URL or original)."""
+    """Store panel image reference; returns the final ref (asset URL or original).
+    Blocking (file I/O, maybe a data-URL decode): call it from async code
+    through asyncio.to_thread."""
     try:
-        project = storage.load_project(project_id)
-    except InvalidProjectIdError:
-        return image_data
-    if not project:
-        return image_data
-    if image_data.startswith("data:"):
-        # Persist embedded payloads as asset files; keep project.json lean.
-        entry = asset_store.save_dataurl(
-            image_data,
-            project_id=project_id or None,
-            kind="panel",
-            meta=meta,
-        )
-        image_data = asset_store.url_for(entry["asset_id"])
-    for panel in project.get("panels", []):
-        if panel.get("id") == panel_id:
-            panel["image"] = image_data
-            break
-    storage.save_project(project)
+        with storage.edit_project(project_id) as project:
+            if image_data.startswith("data:"):
+                # Persist embedded payloads as asset files; keep project.json lean.
+                entry = asset_store.save_dataurl(
+                    image_data,
+                    project_id=project_id or None,
+                    kind="panel",
+                    meta=meta,
+                )
+                image_data = asset_store.url_for(entry["asset_id"])
+            for panel in project.get("panels", []):
+                if panel.get("id") == panel_id:
+                    panel["image"] = image_data
+                    break
+    except (InvalidProjectIdError, ProjectNotFoundError):
+        pass   # unknown project: the image is returned as it came
     return image_data
 
 
@@ -107,7 +106,7 @@ async def upload_image(project_id: str, panel_id: str, file: UploadFile = File(.
         ext = (file.content_type or "image/png").split("/")[-1]
         entry = asset_store.save_bytes(contents, ext=ext, project_id=project_id, kind="upload")
         url = asset_store.url_for(entry["asset_id"])
-        _save_panel_image(project_id, panel_id, url)
+        await asyncio.to_thread(_save_panel_image, project_id, panel_id, url)
         return JSONResponse({
             "success": True,
             "image": url,
@@ -190,10 +189,11 @@ async def generate_with_swarmui(req: GenerateImageRequest):
             # Persist as asset file and hand the URL back so the frontend
             # store does not re-embed a dataURL (which would duplicate assets
             # on the next autosave normalization).
-            ref = _save_panel_image(req.project_id, req.panel_id, result["image"],
-                                    meta={"prompt": rated["prompt"], "negative_prompt": rated["negative"],
-                                          "seed": req.seed, "content_rating": rated["rating"],
-                                          "injected": [rated["injected"]]})
+            ref = await asyncio.to_thread(
+                _save_panel_image, req.project_id, req.panel_id, result["image"],
+                meta={"prompt": rated["prompt"], "negative_prompt": rated["negative"],
+                      "seed": req.seed, "content_rating": rated["rating"],
+                      "injected": [rated["injected"]]})
             result["image"] = ref
             result["asset_id"] = ref.rsplit("/", 1)[-1] if ref.startswith("/api/assets/file/") else None
             result["path"] = ref

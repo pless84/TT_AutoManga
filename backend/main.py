@@ -18,12 +18,14 @@ from .api import auth_google as auth_google_api
 from .api import training as training_api
 from .api import collections as collections_api
 from .core import auth as auth_core
-from .core.config import BASE_DIR, PROJECTS_DIR, ASSETS_DIR
+from .core.config import BASE_DIR, DATA_DIR, PROJECTS_DIR, ASSETS_DIR
 
 logger = logging.getLogger(__name__)
 
 
 ORPHAN_ASSET_MIN_AGE_S = 14 * 24 * 3600
+ORPHAN_CLEANUP_EVERY_S = 24 * 3600
+ORPHAN_CLEANUP_STAMP = DATA_DIR / ".orphan_cleanup_stamp"
 
 
 def _asset_created(entry: dict) -> float:
@@ -149,11 +151,34 @@ def _cleanup_orphan_assets() -> None:
         logger.info("[Cleanup] Removed %d orphan asset file(s)", removed)
 
 
+def _maybe_cleanup_orphan_assets() -> None:
+    """The orphan cleanup parses every project: at most once a day (a stamp
+    file), in a background thread so startup does not wait for it. Safe
+    alongside requests: it only deletes assets unreferenced AND older than
+    ORPHAN_ASSET_MIN_AGE_S."""
+    try:
+        if time.time() - ORPHAN_CLEANUP_STAMP.stat().st_mtime < ORPHAN_CLEANUP_EVERY_S:
+            return
+    except FileNotFoundError:
+        pass
+    try:
+        _cleanup_orphan_assets()
+    except Exception:
+        logger.exception("orphan asset cleanup failed")
+        return
+    try:
+        ORPHAN_CLEANUP_STAMP.touch()
+    except OSError as e:
+        logger.warning("orphan cleanup: cannot write %s: %s", ORPHAN_CLEANUP_STAMP, e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Disk-touching maintenance runs at server startup, not at import time,
     # so importing the app (tests, CLI helpers) never deletes files.
-    _cleanup_orphan_assets()
+    import threading
+    threading.Thread(target=_maybe_cleanup_orphan_assets,
+                     name="orphan-asset-cleanup", daemon=True).start()
     # a batch AI rewrite the last server left running carries on
     try:
         comics_rewrite_batch.resume()

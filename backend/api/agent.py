@@ -30,6 +30,7 @@ from ..render.export_service import export_pages
 from ..render.resolve import make_resolver
 from ..storage.asset_store import asset_store
 from ..storage.manager import storage, InvalidProjectIdError
+from .project_lock import locked_project
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,7 @@ def _project_stats(project: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+
 def _load_or_404(project_id: str) -> Dict[str, Any]:
     try:
         project = storage.load_project(project_id)
@@ -118,7 +120,7 @@ def _load_or_404(project_id: str) -> Dict[str, Any]:
 
 
 @router.post("/projects")
-async def create_project(req: CreateProjectRequest):
+def create_project(req: CreateProjectRequest):
     project = {"name": req.name or "untitled", "panels": req.panels,
                "settings": {}, "composerPages": []}
     _ensure_panel_ids(project["panels"])
@@ -128,7 +130,7 @@ async def create_project(req: CreateProjectRequest):
 
 
 @router.get("/projects")
-async def list_projects():
+def list_projects():
     out = []
     for p in storage.list_projects():
         out.append({"id": p.get("id"), "name": p.get("name"),
@@ -138,7 +140,7 @@ async def list_projects():
 
 
 @router.get("/projects/{project_id}")
-async def get_project(project_id: str):
+def get_project(project_id: str):
     project = _load_or_404(project_id)
     return {"project": project, "stats": _project_stats(project)}
 
@@ -148,7 +150,8 @@ class PutPanelsRequest(BaseModel):
 
 
 @router.put("/projects/{project_id}/panels")
-async def put_panels(project_id: str, req: PutPanelsRequest):
+@locked_project
+def put_panels(project_id: str, req: PutPanelsRequest):
     project = _load_or_404(project_id)
     _ensure_panel_ids(req.panels)
     _validate_panels(req.panels)
@@ -158,7 +161,8 @@ async def put_panels(project_id: str, req: PutPanelsRequest):
 
 
 @router.patch("/projects/{project_id}/panels/{panel_id}")
-async def patch_panel(project_id: str, panel_id: str, updates: Dict[str, Any]):
+@locked_project
+def patch_panel(project_id: str, panel_id: str, updates: Dict[str, Any]):
     project = _load_or_404(project_id)
     updates = dict(updates)
     if "id" in updates and updates["id"] != panel_id:
@@ -193,7 +197,7 @@ class StoryboardRequest(BaseModel):
 async def agent_storyboard(req: StoryboardRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
-    project = _load_or_404(req.project_id)
+    await asyncio.to_thread(_load_or_404, req.project_id)   # 404 before the LLM call
 
     # a request-local client; masked echoes are ignored and the stored key is
     # only sent to the stored endpoint (a foreign endpoint needs the
@@ -208,14 +212,19 @@ async def agent_storyboard(req: StoryboardRequest):
     if not panels:
         raise HTTPException(status_code=502, detail="LLM returned no panels")
 
-    if not req.replace:
-        for p in project.get("panels", []):
-            panels.append(p)
-    _ensure_panel_ids(panels)
-    _validate_panels(panels)
-    project["panels"] = panels
-    saved = storage.save_project(project)
-    return {"panels": saved["panels"]}
+    def apply() -> List[Dict[str, Any]]:
+        # load AFTER the (slow) LLM call, under the lock: edits made while
+        # it ran are kept
+        with storage.lock(req.project_id):
+            project = _load_or_404(req.project_id)
+            new = list(panels)
+            if not req.replace:
+                new.extend(project.get("panels", []))
+            _ensure_panel_ids(new)
+            _validate_panels(new)
+            project["panels"] = new
+            return storage.save_project(project)["panels"]
+    return {"panels": await asyncio.to_thread(apply)}
 
 
 # ---------------------------------------------------------------------------
@@ -482,8 +491,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError(f"panel {payload['panel_id']} not found in "
                              f"project {payload['project_id']}")
         from .assets import _save_panel_image
-        _save_panel_image(payload["project_id"], payload["panel_id"],
-                          assets_out[apply_variant]["url"])
+        await asyncio.to_thread(_save_panel_image, payload["project_id"],
+                                payload["panel_id"], assets_out[apply_variant]["url"])
         applied = True
     out = {"assets": assets_out, "applied": applied,
            "model": model, "injected": injected, "content_rating": rated["rating"]}
@@ -713,7 +722,8 @@ class ProjectSettingsUpdate(BaseModel):
 
 
 @router.put("/projects/{project_id}/settings")
-async def put_project_settings(project_id: str, req: ProjectSettingsUpdate):
+@locked_project
+def put_project_settings(project_id: str, req: ProjectSettingsUpdate):
     """Project-level style profile (appended to every panel prompt), character
     prompt blocks (injected for panels listing that character), and a location
     library (injected for panels naming that location)."""
@@ -749,7 +759,7 @@ async def put_project_settings(project_id: str, req: ProjectSettingsUpdate):
 
 
 @router.get("/projects/{project_id}/characters")
-async def get_project_characters(project_id: str):
+def get_project_characters(project_id: str):
     """Effective character prompt blocks (project entries override the global
     character library) — what /generate would inject for each name."""
     project = _load_or_404(project_id)
@@ -772,7 +782,8 @@ class BuildPageRequest(BaseModel):
 
 
 @router.post("/projects/{project_id}/pages")
-async def build_page_endpoint(project_id: str, req: BuildPageRequest):
+@locked_project
+def build_page_endpoint(project_id: str, req: BuildPageRequest):
     project = _load_or_404(project_id)
     try:
         page, warnings = build_page(req.model_dump(exclude={"dry_run"}),
@@ -790,13 +801,14 @@ async def build_page_endpoint(project_id: str, req: BuildPageRequest):
 
 
 @router.get("/projects/{project_id}/pages/{page_id}")
-async def get_page(project_id: str, page_id: str):
+def get_page(project_id: str, page_id: str):
     project = _load_or_404(project_id)
     return {"page": _find_page(project, page_id)}
 
 
 @router.delete("/projects/{project_id}/pages/{page_id}")
-async def delete_page(project_id: str, page_id: str):
+@locked_project
+def delete_page(project_id: str, page_id: str):
     project = _load_or_404(project_id)
     pages = project.get("composerPages", [])
     for i, page in enumerate(pages):
@@ -833,7 +845,8 @@ class PlanPagesRequest(BaseModel):
 
 
 @router.post("/projects/{project_id}/plan-pages")
-async def plan_pages(project_id: str, req: PlanPagesRequest):
+@locked_project
+def plan_pages(project_id: str, req: PlanPagesRequest):
     """Heuristic pagination: chunk panels into pages (page = the narrative
     unit of manga), splash panels get a solo page, template picked by slot
     count. Pure planning unless apply=true."""
@@ -892,7 +905,8 @@ class CoverRequest(BaseModel):
 
 
 @router.post("/projects/{project_id}/cover")
-async def build_cover(project_id: str, req: CoverRequest):
+@locked_project
+def build_cover(project_id: str, req: CoverRequest):
     """Assemble a cover page (full-bleed art + outlined title) and insert it
     as page 1. Generate the art first via /generate kind=\"cover\"."""
     if not req.title.strip():
@@ -1006,7 +1020,8 @@ class ReorderPagesRequest(BaseModel):
 
 
 @router.put("/projects/{project_id}/pages/order")
-async def reorder_pages(project_id: str, req: ReorderPagesRequest):
+@locked_project
+def reorder_pages(project_id: str, req: ReorderPagesRequest):
     project = _load_or_404(project_id)
     pages = project.setdefault("composerPages", [])
     existing = [p.get("id") for p in pages]
@@ -1092,7 +1107,8 @@ def _find_page(project: Dict[str, Any], page_id: str) -> Dict[str, Any]:
 
 
 @router.post("/projects/{project_id}/pages/{page_id}/elements")
-async def add_element(project_id: str, page_id: str, el: Dict[str, Any]):
+@locked_project
+def add_element(project_id: str, page_id: str, el: Dict[str, Any]):
     project = _load_or_404(project_id)
     page = _find_page(project, page_id)
     el = dict(el)
@@ -1114,7 +1130,8 @@ async def add_element(project_id: str, page_id: str, el: Dict[str, Any]):
 
 
 @router.patch("/projects/{project_id}/pages/{page_id}/elements/{element_id}")
-async def patch_element(project_id: str, page_id: str, element_id: str,
+@locked_project
+def patch_element(project_id: str, page_id: str, element_id: str,
                         updates: Dict[str, Any]):
     project = _load_or_404(project_id)
     page = _find_page(project, page_id)
@@ -1135,7 +1152,8 @@ async def patch_element(project_id: str, page_id: str, element_id: str,
 
 
 @router.delete("/projects/{project_id}/pages/{page_id}/elements/{element_id}")
-async def delete_element(project_id: str, page_id: str, element_id: str):
+@locked_project
+def delete_element(project_id: str, page_id: str, element_id: str):
     project = _load_or_404(project_id)
     page = _find_page(project, page_id)
     for el in page["elements"]:
