@@ -184,8 +184,17 @@ the reverse proxy (Caddy on `settings.auth.trustedProxy`, default
 
 ## 3. Data model (contract)
 
-Project JSON = `{ id, name, createdAt, updatedAt,
+Project JSON = `{ id, name, createdAt, updatedAt, version,
 panels: Panel[], composerPages: ComposerPage[], settings }`.
+
+- `version` is a save counter the server bumps on every write (do not set
+  it; it is overwritten).
+- Concurrent writers are safe: every load-modify-save of one project
+  (agent PATCH/PUT, batch generation applying a panel image, Composer
+  autosave, `/api/projects/save`) holds that project's lock, and those
+  handlers run in the threadpool, off the event loop. A storyboard LLM call
+  loads the project only after the LLM answers, so edits made meanwhile are
+  kept.
 
 - **Panel** (storyboard cell): `{ id, order?, scene, characters: string[],
   dialogue: string, shot?: "wide|medium|close-up|extreme-close-up|splash",
