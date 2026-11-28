@@ -115,7 +115,7 @@ def test_storyboard_keeps_edits_made_during_llm_call(client, mgr, monkeypatch):
                 p["panels"][0]["dialogue"] = "edited meanwhile"
             return {"panels": [{"scene": "new"}]}
 
-    monkeypatch.setattr(agent.llm_client, "for_request", lambda *a, **k: FakeLLM())
+    monkeypatch.setattr(agent.projects.llm_client, "for_request", lambda *a, **k: FakeLLM())
     r = client.post("/api/agent/storyboard", json={
         "project_id": pid, "text": "x", "replace": False})
     assert r.status_code == 200, r.text

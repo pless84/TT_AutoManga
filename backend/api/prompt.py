@@ -44,17 +44,13 @@ async def enhance_prompt(req: EnhanceRequest):
         len(req.scene_description),
     )
     
-    try:
-        result = await llm.enhance_prompt(req.scene_description, req.mode)
-        logger.info(
-            "prompt/enhance OK mode=%s out_len=%d",
-            req.mode,
-            len(result.get("enhanced_prompt") or ""),
-        )
-        return result
-    except Exception as e:
-        logger.exception("prompt/enhance failed mode=%s: %s", req.mode, e)
-        raise HTTPException(status_code=500, detail=str(e))
+    result = await llm.enhance_prompt(req.scene_description, req.mode)
+    logger.info(
+        "prompt/enhance OK mode=%s out_len=%d",
+        req.mode,
+        len(result.get("enhanced_prompt") or ""),
+    )
+    return result
 
 
 @router.post("/batch-enhance")

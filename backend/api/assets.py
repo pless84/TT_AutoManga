@@ -1,12 +1,17 @@
 import asyncio
+import logging
+
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from ..core.swarmui_client import swarm_client
-from ..core.config import settings, LoraConfig
-from ..storage.manager import storage, InvalidProjectIdError, ProjectNotFoundError
+from ..core.config import settings
 from ..storage.asset_store import asset_store
+from ..services import generation
+from ..services.generation import bind_panel_image
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
@@ -37,31 +42,6 @@ class UploadRequest(BaseModel):
     panel_id: str
 
 
-def _save_panel_image(project_id: str, panel_id: str, image_data: str,
-                      meta: Optional[Dict[str, Any]] = None) -> str:
-    """Store panel image reference; returns the final ref (asset URL or original).
-    Blocking (file I/O, maybe a data-URL decode): call it from async code
-    through asyncio.to_thread."""
-    try:
-        with storage.edit_project(project_id) as project:
-            if image_data.startswith("data:"):
-                # Persist embedded payloads as asset files; keep project.json lean.
-                entry = asset_store.save_dataurl(
-                    image_data,
-                    project_id=project_id or None,
-                    kind="panel",
-                    meta=meta,
-                )
-                image_data = asset_store.url_for(entry["asset_id"])
-            for panel in project.get("panels", []):
-                if panel.get("id") == panel_id:
-                    panel["image"] = image_data
-                    break
-    except (InvalidProjectIdError, ProjectNotFoundError):
-        pass   # unknown project: the image is returned as it came
-    return image_data
-
-
 @router.get("/file/{asset_id}")
 async def get_asset_file(asset_id: str):
     path = asset_store.path_for(asset_id)
@@ -85,40 +65,34 @@ async def register_asset(
 ):
     """Register arbitrary image bytes as a reusable asset (e.g. agent-side
     post-processing output) without binding it to a panel."""
-    try:
-        contents = await file.read()
-        ext = (file.content_type or "image/png").split("/")[-1]
-        entry = asset_store.save_bytes(contents, ext=ext,
-                                       project_id=project_id or None, kind=kind)
-        return JSONResponse({
-            "success": True,
-            "asset_id": entry["asset_id"],
-            "url": asset_store.url_for(entry["asset_id"]),
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    contents = await file.read()
+    ext = (file.content_type or "image/png").split("/")[-1]
+    entry = await asyncio.to_thread(asset_store.save_bytes, contents, ext=ext,
+                                    project_id=project_id or None, kind=kind)
+    return JSONResponse({
+        "success": True,
+        "asset_id": entry["asset_id"],
+        "url": asset_store.url_for(entry["asset_id"]),
+    })
 
 
 @router.post("/upload/{project_id}/{panel_id}")
 async def upload_image(project_id: str, panel_id: str, file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        ext = (file.content_type or "image/png").split("/")[-1]
-        entry = asset_store.save_bytes(contents, ext=ext, project_id=project_id, kind="upload")
-        url = asset_store.url_for(entry["asset_id"])
-        await asyncio.to_thread(_save_panel_image, project_id, panel_id, url)
-        return JSONResponse({
-            "success": True,
-            "image": url,
-            "asset_id": entry["asset_id"],
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    contents = await file.read()
+    ext = (file.content_type or "image/png").split("/")[-1]
+    entry = await asyncio.to_thread(asset_store.save_bytes, contents, ext=ext,
+                                    project_id=project_id, kind="upload")
+    url = asset_store.url_for(entry["asset_id"])
+    await asyncio.to_thread(bind_panel_image, project_id, panel_id, url)
+    return JSONResponse({
+        "success": True,
+        "image": url,
+        "asset_id": entry["asset_id"],
+    })
 
 
 @router.post("/swarmui/generate")
 async def generate_with_swarmui(req: GenerateImageRequest):
-    swarmsettings = settings.swarmui
     override = None
     if req.swarmui_address:
         # one-shot override: http(s) on loopback / the LAN only (no SSRF to
@@ -132,77 +106,31 @@ async def generate_with_swarmui(req: GenerateImageRequest):
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
-    loras = None
-    if swarmsettings.currentLoras:
-        loras = [l for l in swarmsettings.currentLoras if l.name]
-    prompt = req.prompt
-    # the panel characters' trained LoRAs + trigger words (global LoRAs stay;
-    # a panel character's weight wins for the same LoRA)
-    project = None
+    # the shared generation path (backend/services/generation.py) with the
+    # global settings; the Assets tab's prompt already carries style and
+    # character blocks, so only the panel characters' LoRAs, the IP-Adapter
+    # sheet and the content rating are added. An unknown project just
+    # paints the prompt as sent (not bound to any panel).
+    payload = {"prompt": req.prompt, "negative_prompt": req.negative_prompt,
+               "seed": req.seed, "project_id": req.project_id, "panel_id": req.panel_id,
+               "remove_background": req.remove_background, "kind": "panel"}
+    logger.info("[Generate] panel=%s prompt_len=%d seed=%s rm_bg=%s", req.panel_id,
+                len(req.prompt), req.seed, req.remove_background)
     try:
-        project = storage.load_project(req.project_id) if req.project_id else None
-    except InvalidProjectIdError:
-        project = None
-    panel = next((p for p in (project or {}).get("panels") or []
-                  if p.get("id") == req.panel_id), None) if project else None
-    ref_kwargs: Dict[str, Any] = {}
-    if panel:
-        from ..prompting import apply_conditioning, ipadapter_args, reference_for_panel
-        prompt, loras, _ = apply_conditioning(prompt, loras, project, panel)
-        # a solo panel's character sheet (refWeight > 0) guides it via IP-Adapter
-        ref_kwargs = ipadapter_args(reference_for_panel(project, panel))
-
-    # the content rating (backend/content_rating.py) for the project's panel
-    from ..content_rating import RatingRefused, apply_rating
-    try:
-        rated = apply_rating(prompt, req.negative_prompt, project=project, panel=panel,
-                             free_prompt=req.prompt)
-    except RatingRefused as e:
+        out = await generation.generate(payload, prompt_blocks=False, strict_project=False,
+                                        address=override)
+    except ValueError as e:   # RatingRefused: a mature prompt naming a minor
         raise HTTPException(status_code=400, detail=str(e))
-
-    try:
-        import logging
-        logger = logging.getLogger(__name__)
-        if rated["notice"]:
-            logger.info("[Generate] panel %s: %s", req.panel_id, rated["notice"])
-        logger.info(f"[Generate] REQ from frontend: prompt='{req.prompt}', negative_prompt='{req.negative_prompt}', seed={req.seed}, panel_id={req.panel_id}")
-        logger.info(f"[Generate] Using settings: steps={swarmsettings.currentSteps}, cfg={swarmsettings.currentCfgScale}, model={swarmsettings.currentModel}, w={swarmsettings.currentWidth}, h={swarmsettings.currentHeight}")
-        
-        result = await swarm_client.generate_image(
-            prompt=rated["prompt"],
-            negative_prompt=rated["negative"],
-            model=swarmsettings.currentModel or None,
-            steps=swarmsettings.currentSteps,
-            cfg_scale=swarmsettings.currentCfgScale,
-            width=swarmsettings.currentWidth,
-            height=swarmsettings.currentHeight,
-            sampler_name=swarmsettings.currentSamplerName,
-            loras=loras,
-            seed=req.seed,
-            remove_background=req.remove_background,
-            # one-shot override: never rewrites the shared client's address
-            address=override,
-            **ref_kwargs,
-        )
-        
-        if result.get("success"):
-            # Persist as asset file and hand the URL back so the frontend
-            # store does not re-embed a dataURL (which would duplicate assets
-            # on the next autosave normalization).
-            ref = await asyncio.to_thread(
-                _save_panel_image, req.project_id, req.panel_id, result["image"],
-                meta={"prompt": rated["prompt"], "negative_prompt": rated["negative"],
-                      "seed": req.seed, "content_rating": rated["rating"],
-                      "injected": [rated["injected"]]})
-            result["image"] = ref
-            result["asset_id"] = ref.rsplit("/", 1)[-1] if ref.startswith("/api/assets/file/") else None
-            result["path"] = ref
-        result["content_rating"] = rated["rating"]
-        if rated["notice"]:
-            result["notice"] = rated["notice"]
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except generation.GenerationError as e:
+        # the Assets tab shows `error` (HTTP 200, as SwarmUI failures always were)
+        return {"success": False, "error": str(e).removeprefix("SwarmUI: "),
+                "content_rating": e.rating}
+    asset = out["assets"][0]
+    result = {"success": True, "image": asset["url"], "asset_id": asset["asset_id"],
+              "path": asset["url"], "content_rating": out["content_rating"]}
+    if out.get("notice"):
+        result["notice"] = out["notice"]
+    return result
 
 
 @router.get("/swarmui/models")

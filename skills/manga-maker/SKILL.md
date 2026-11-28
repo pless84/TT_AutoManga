@@ -249,8 +249,9 @@ auto-number `panel_1..n`.
   width/height/inject_characters` override global settings),
   `POST /api/agent/generate-batch` (returns 202 job id) → `GET /api/agent/jobs/{id}`
   until `status=="done"`; `apply_variant` / `patch_panel(image=…)` to bind a
-  winner. Failed singles → HTTP 502 with the SwarmUI error; batch items carry
-  their own error strings; re-submission is safe and idempotent.
+  winner. Failed singles → HTTP 502 with the SwarmUI error; a `panel_id`
+  that is not in the project → 400 before anything is painted; batch items
+  carry their own error strings; re-submission is safe and idempotent.
 - Pages: `GET /api/agent/templates` (slot counts — query, don't memorize),
   `POST .../pages` `{template:{kind:"builtin",id}|{kind:"rows",rows:[..]},
   panel_ids, reading, name, dynamic}`, `GET/DELETE .../pages/{pgid}`,
@@ -287,6 +288,8 @@ Print-grade key art: `upscale_image(asset_url, model)` (check
 ## 12. Troubleshooting
 
 - `health` fails → start the backend. SwarmUI 502 → check SwarmUI, resubmit.
+- HTTP 500 `{"detail": "internal error"}` → a backend bug, not your request;
+  the traceback is in the server log. Don't retry in a loop.
 - Job table is in-memory: after a backend restart, re-submit the batch.
 - Speaker prefix leaks into bubble text → the `Name：` prefix didn't exactly
   match a character in that panel's `characters` — fix the panel, rebuild

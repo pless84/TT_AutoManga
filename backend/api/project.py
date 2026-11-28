@@ -2,14 +2,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-from ..storage.manager import storage, InvalidProjectIdError, pages_base
+from ..storage.manager import storage, pages_base
 from .project_lock import locked_project
 from ..render.bubbles import sanitize_pages
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
-
-
-
 
 
 class Project(BaseModel):
@@ -24,60 +21,44 @@ class Project(BaseModel):
 
 @router.get("/")
 def list_projects():
-    try:
-        projects = storage.list_projects()
-        return {"projects": projects}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"projects": storage.list_projects()}
 
 
 @router.post("/save")
 @locked_project
 def save_project(project: Project):
-    try:
-        data = project.model_dump()
-        sanitize_pages(data.get("composerPages"))   # tailTip into the renderer's range
-        # Data-loss guard: the composer autosave historically posted
-        # panels: [] / settings: {detailLevel} for projects whose storyboard
-        # was written by the agent API, wiping them on disk. When a save
-        # carries an empty panel list while the stored project has panels,
-        # the sender is not managing the storyboard — keep the stored one.
-        # (A UI user deleting every panel goes through the storyboard store,
-        # which sends the real list; the empty-list case is legacy clients.)
-        existing = storage.load_project(project.id) if project.id else None
-        if not data.get("panels") and existing and existing.get("panels"):
-            data["panels"] = existing["panels"]
-        # same guard for the composer pages: an empty list from a client
-        # that never loaded them must not wipe agent-built pages
-        if not data.get("composerPages") and existing \
-                and existing.get("composerPages"):
-            data["composerPages"] = existing["composerPages"]
-        if existing:
-            # settings are independent keys (UI edits detailLevel, the agent
-            # writes style/characters/locations/bible): merge, never replace
-            data["settings"] = {**existing.get("settings", {}),
-                                **(data.get("settings") or {})}
-        result = storage.save_project(data)
-        return {"success": True, "project": result}
-    except InvalidProjectIdError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    data = project.model_dump()
+    sanitize_pages(data.get("composerPages"))   # tailTip into the renderer's range
+    # Data-loss guard: the composer autosave historically posted
+    # panels: [] / settings: {detailLevel} for projects whose storyboard
+    # was written by the agent API, wiping them on disk. When a save
+    # carries an empty panel list while the stored project has panels,
+    # the sender is not managing the storyboard — keep the stored one.
+    # (A UI user deleting every panel goes through the storyboard store,
+    # which sends the real list; the empty-list case is legacy clients.)
+    existing = storage.load_project(project.id) if project.id else None
+    if not data.get("panels") and existing and existing.get("panels"):
+        data["panels"] = existing["panels"]
+    # same guard for the composer pages: an empty list from a client
+    # that never loaded them must not wipe agent-built pages
+    if not data.get("composerPages") and existing \
+            and existing.get("composerPages"):
+        data["composerPages"] = existing["composerPages"]
+    if existing:
+        # settings are independent keys (UI edits detailLevel, the agent
+        # writes style/characters/locations/bible): merge, never replace
+        data["settings"] = {**existing.get("settings", {}),
+                            **(data.get("settings") or {})}
+    result = storage.save_project(data)
+    return {"success": True, "project": result}
 
 
 @router.get("/load/{project_id}")
 def load_project(project_id: str):
-    try:
-        project = storage.load_project(project_id)
-        if project:
-            return {"project": project, "pagesBase": pages_base(project)}
+    project = storage.load_project(project_id)
+    if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    except InvalidProjectIdError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"project": project, "pagesBase": pages_base(project)}
 
 
 class ComposerPagesUpdate(BaseModel):
@@ -95,10 +76,7 @@ def put_composer_pages(project_id: str, req: ComposerPagesUpdate):
 
     No await between load and save, so the check-and-write is atomic with
     respect to other request handlers on the event loop."""
-    try:
-        project = storage.load_project(project_id)
-    except InvalidProjectIdError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    project = storage.load_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     current = pages_base(project)
@@ -127,25 +105,18 @@ def project_cover_src(project: Dict[str, Any], page_id: Optional[str] = None) ->
 
 @router.get("/covers")
 def list_project_covers():
-    try:
-        projects = storage.list_projects()
-        covers = {}
-        for proj in projects:
-            src = project_cover_src(proj)
-            if src:
-                covers[proj["id"]] = src
-        return {"covers": covers}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    covers = {}
+    for proj in storage.list_projects():
+        src = project_cover_src(proj)
+        if src:
+            covers[proj["id"]] = src
+    return {"covers": covers}
 
 
 @router.post("/{project_id}/migrate-assets")
 @locked_project
 def migrate_project_assets(project_id: str):
-    try:
-        project = storage.load_project(project_id)
-    except InvalidProjectIdError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    project = storage.load_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     saved = storage.save_project(project)   # save_project normalizes embedded images
@@ -154,14 +125,6 @@ def migrate_project_assets(project_id: str):
 
 @router.delete("/delete/{project_id}")
 def delete_project(project_id: str):
-    try:
-        success = storage.delete_project(project_id)
-        if success:
-            return {"success": True}
+    if not storage.delete_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    except InvalidProjectIdError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"success": True}

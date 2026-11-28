@@ -127,7 +127,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "PROJECTS_DIR", tmp_path / "projects")
     store = astore_mod.AssetStore(tmp_path / "assets", tmp_path / "assets" / "index.json")
     monkeypatch.setattr(astore_mod, "asset_store", store)
-    for mod in (agent_mod, assets_mod):
+    for mod in (assets_mod,):
         monkeypatch.setattr(mod, "asset_store", store)
     lib = tmp_path / "characters.json"
     lib.write_text(json.dumps(LIBRARY), encoding="utf-8")
@@ -153,7 +153,9 @@ def env(tmp_path, monkeypatch):
         pass
     e = Env()
     e.c, e.calls, e.config, e.tmp = client, calls, config, tmp_path
-    return e
+    from backend.tests._fixtures import live_loop
+    with live_loop(client):   # batch jobs run on between requests
+        yield e
 
 
 PANELS = [

@@ -32,6 +32,9 @@ MCP alternative: `python -m backend.mcp_server` exposes the same API as 30
 typed MCP tools (any MCP client; `render_page_preview` returns image
 content). A portable workflow skill lives at `skills/manga-maker/SKILL.md`
 (agentskills.io format).
+Code: `/api/agent/*` lives in the `backend/api/agent/` package
+(`projects.py`, `generate.py`, `pages.py`, `output.py`, helpers in
+`_common.py`); image generation itself is `backend/services/generation.py`.
 
 ### Access (login gate)
 
@@ -515,6 +518,18 @@ reproducible outside the asset index.
 
 ## 6. Image generation notes
 
+- One generation path: `/api/agent/generate`, `/generate-batch` jobs and the
+  Assets tab's `/api/assets/swarmui/generate` all run
+  `backend/services/generation.py` `generate()` (conditioning, IP-Adapter,
+  content rating, the SwarmUI call, alpha fallback, PNG recipe chunks, the
+  asset store, binding to the panel). The Assets endpoint uses the global
+  settings and skips the style/location/shot/character prompt blocks (its
+  prompt already has them); it answers `{success, image, asset_id, path,
+  content_rating, notice?}`, `image` always an asset URL (also for an unknown
+  project, which is then not bound), and `{success: false, error,
+  content_rating}` with HTTP 200 when SwarmUI fails. A missing `panel_id` on
+  `/api/agent/generate` with `apply_to_panel` is refused (400) before
+  SwarmUI is called.
 - SwarmUI must be reachable at the configured address (`GET
   /api/assets/swarmui/test` to probe). Steps/sampler/LoRA come from global
   settings (`data/settings.json` → `swarmui`); model/loras may be overridden
@@ -597,7 +612,10 @@ before SwarmUI is called.
 - FastAPI standard errors: `{"detail": "..."}`. 404 unknown project/page/
   element/job/asset; 400 validation (bad template, coordinates outside 0-100,
   duplicate panel ids, empty scene, unsafe id); 502 upstream LLM/SwarmUI
-  failure.
+  failure. An unsafe project id is a 400 and a missing project a 404 on
+  every endpoint. Any other unexpected error is a 500 `{"detail":
+  "internal error"}`, never the exception text; the traceback is in the
+  server log (`backend.main`, "unhandled error on <method> <path>").
 - Panel ids are auto-filled as `panel_1..panel_n` when omitted; ids must be
   unique and `scene` non-empty.
 - Project/folder ids become directory names on disk, so they must match

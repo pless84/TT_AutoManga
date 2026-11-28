@@ -23,6 +23,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import unicodedata
 import uuid
@@ -130,12 +131,45 @@ def _summary(path: Path) -> Dict[str, Any]:
 # Scripts
 # ---------------------------------------------------------------------------
 
+def _stat_key(path: Path):
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+# script path -> (key, summary): a listing re-reads a script only when the
+# script, its out/<name>/panels folder or an automanga.json changed
+_summary_cache: Dict[str, Any] = {}
+_summary_cache_lock = threading.Lock()
+
+
+def _cached_summary(path: Path) -> Dict[str, Any]:
+    out = _out_dir(path.stem)
+    key = (_stat_key(path), _stat_key(out / "panels"), _stat_key(out / "automanga.json"),
+           _stat_key(_out_dir(path.stem, True) / "automanga.json"))
+    with _summary_cache_lock:
+        hit = _summary_cache.get(str(path))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    summary = _summary(path)
+    with _summary_cache_lock:
+        _summary_cache[str(path)] = (key, summary)
+    return summary
+
+
 @router.get("/scripts")
-async def list_scripts():
+def list_scripts():
+    """The scripts with their summaries (a threadpool handler: file reads)."""
     if not (COMICS_DIR / "automanga.js").exists():
         raise HTTPException(status_code=404,
                             detail=f"no Comics repo with automanga.js at {COMICS_DIR} (set COMICS_DIR)")
-    scripts = [_summary(p) for p in sorted(_scripts_dir().glob("*.comic"))]
+    paths = sorted(_scripts_dir().glob("*.comic"))
+    scripts = [_cached_summary(p) for p in paths]
+    with _summary_cache_lock:   # forget deleted scripts
+        for gone in set(_summary_cache) - {str(p) for p in paths}:
+            _summary_cache.pop(gone, None)
     return {"comics_dir": str(COMICS_DIR), "scripts": scripts}
 
 

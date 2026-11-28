@@ -188,97 +188,91 @@ async def update_settings(update: FullSettingsUpdate):
                      for l in update.swarmui.currentLoras]
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    try:
-        if update.api:
-            if update.api.endpoint is not None:
-                config.settings.api.endpoint = update.api.endpoint
-            if update.api.api_key is not None:
-                # skip the mask echoed back by clients that didn't retype
-                # the key; an empty string still clears it on purpose
-                if not is_masked_api_key(update.api.api_key):
-                    config.settings.api.api_key = update.api.api_key
-            if update.api.model is not None:
-                config.settings.api.model = update.api.model
-            if update.api.temperature is not None:
-                config.settings.api.temperature = update.api.temperature
-            if update.api.max_tokens is not None:
-                config.settings.api.max_tokens = update.api.max_tokens
-            if update.api.thinking is not None:
-                config.settings.api.thinking = update.api.thinking
-            if update.api.storyboard_system_prompt is not None:
-                config.settings.api.storyboard_system_prompt = update.api.storyboard_system_prompt
-            if update.api.prompt_system_prompt is not None:
-                config.settings.api.prompt_system_prompt = update.api.prompt_system_prompt
-            if update.api.tags_system_prompt is not None:
-                config.settings.api.tags_system_prompt = update.api.tags_system_prompt
-            if update.api.storyboardPresets is not None:
-                config.settings.api.storyboardPresets = update.api.storyboardPresets
-            if update.api.promptPresets is not None:
-                config.settings.api.promptPresets = update.api.promptPresets
-        
-        if update.swarmui:
-            if update.swarmui.address is not None:
-                config.settings.swarmui.address = update.swarmui.address
-            if update.swarmui.activePresetId is not None:
-                config.settings.swarmui.activePresetId = update.swarmui.activePresetId
-            if presets is not None:
-                config.settings.swarmui.presets = presets
-            if update.swarmui.currentModel is not None:
-                config.settings.swarmui.currentModel = update.swarmui.currentModel
-            if update.swarmui.currentLoras is not None:
-                config.settings.swarmui.currentLoras = loras
-            if update.swarmui.currentSteps is not None:
-                config.settings.swarmui.currentSteps = update.swarmui.currentSteps
-            if update.swarmui.currentCfgScale is not None:
-                config.settings.swarmui.currentCfgScale = update.swarmui.currentCfgScale
-            if update.swarmui.currentWidth is not None:
-                config.settings.swarmui.currentWidth = update.swarmui.currentWidth
-            if update.swarmui.currentHeight is not None:
-                config.settings.swarmui.currentHeight = update.swarmui.currentHeight
-            if update.swarmui.currentSamplerName is not None:
-                config.settings.swarmui.currentSamplerName = update.swarmui.currentSamplerName
-            if update.swarmui.promptSuffix is not None:
-                config.settings.swarmui.promptSuffix = update.swarmui.promptSuffix
-            if update.swarmui.ipadapterPreset is not None:
-                config.settings.swarmui.ipadapterPreset = update.swarmui.ipadapterPreset
-            if update.swarmui.ipadapterWeightType is not None:
-                config.settings.swarmui.ipadapterWeightType = update.swarmui.ipadapterWeightType
-            if update.swarmui.ipadapterEnd is not None:
-                config.settings.swarmui.ipadapterEnd = min(1.0, max(0.05, update.swarmui.ipadapterEnd))
-        
-        if update.defaults:
-            if update.defaults.detailLevel is not None:
-                config.settings.defaults.detailLevel = update.defaults.detailLevel
-            if update.defaults.autoSaveInterval is not None:
-                config.settings.defaults.autoSaveInterval = update.defaults.autoSaveInterval
-            if update.defaults.exportQuality is not None:
-                config.settings.defaults.exportQuality = update.defaults.exportQuality
-        
-        if update.training:
-            # validated by TrainingConfigUpdate; only the fields sent change
-            for key, value in update.training.model_dump(exclude_none=True).items():
-                setattr(config.settings.training, key, value)
+    if update.api:
+        if update.api.endpoint is not None:
+            config.settings.api.endpoint = update.api.endpoint
+        if update.api.api_key is not None:
+            # skip the mask echoed back by clients that didn't retype
+            # the key; an empty string still clears it on purpose
+            if not is_masked_api_key(update.api.api_key):
+                config.settings.api.api_key = update.api.api_key
+        if update.api.model is not None:
+            config.settings.api.model = update.api.model
+        if update.api.temperature is not None:
+            config.settings.api.temperature = update.api.temperature
+        if update.api.max_tokens is not None:
+            config.settings.api.max_tokens = update.api.max_tokens
+        if update.api.thinking is not None:
+            config.settings.api.thinking = update.api.thinking
+        if update.api.storyboard_system_prompt is not None:
+            config.settings.api.storyboard_system_prompt = update.api.storyboard_system_prompt
+        if update.api.prompt_system_prompt is not None:
+            config.settings.api.prompt_system_prompt = update.api.prompt_system_prompt
+        if update.api.tags_system_prompt is not None:
+            config.settings.api.tags_system_prompt = update.api.tags_system_prompt
+        if update.api.storyboardPresets is not None:
+            config.settings.api.storyboardPresets = update.api.storyboardPresets
+        if update.api.promptPresets is not None:
+            config.settings.api.promptPresets = update.api.promptPresets
+    
+    if update.swarmui:
+        if update.swarmui.address is not None:
+            config.settings.swarmui.address = update.swarmui.address
+        if update.swarmui.activePresetId is not None:
+            config.settings.swarmui.activePresetId = update.swarmui.activePresetId
+        if presets is not None:
+            config.settings.swarmui.presets = presets
+        if update.swarmui.currentModel is not None:
+            config.settings.swarmui.currentModel = update.swarmui.currentModel
+        if update.swarmui.currentLoras is not None:
+            config.settings.swarmui.currentLoras = loras
+        if update.swarmui.currentSteps is not None:
+            config.settings.swarmui.currentSteps = update.swarmui.currentSteps
+        if update.swarmui.currentCfgScale is not None:
+            config.settings.swarmui.currentCfgScale = update.swarmui.currentCfgScale
+        if update.swarmui.currentWidth is not None:
+            config.settings.swarmui.currentWidth = update.swarmui.currentWidth
+        if update.swarmui.currentHeight is not None:
+            config.settings.swarmui.currentHeight = update.swarmui.currentHeight
+        if update.swarmui.currentSamplerName is not None:
+            config.settings.swarmui.currentSamplerName = update.swarmui.currentSamplerName
+        if update.swarmui.promptSuffix is not None:
+            config.settings.swarmui.promptSuffix = update.swarmui.promptSuffix
+        if update.swarmui.ipadapterPreset is not None:
+            config.settings.swarmui.ipadapterPreset = update.swarmui.ipadapterPreset
+        if update.swarmui.ipadapterWeightType is not None:
+            config.settings.swarmui.ipadapterWeightType = update.swarmui.ipadapterWeightType
+        if update.swarmui.ipadapterEnd is not None:
+            config.settings.swarmui.ipadapterEnd = min(1.0, max(0.05, update.swarmui.ipadapterEnd))
+    
+    if update.defaults:
+        if update.defaults.detailLevel is not None:
+            config.settings.defaults.detailLevel = update.defaults.detailLevel
+        if update.defaults.autoSaveInterval is not None:
+            config.settings.defaults.autoSaveInterval = update.defaults.autoSaveInterval
+        if update.defaults.exportQuality is not None:
+            config.settings.defaults.exportQuality = update.defaults.exportQuality
+    
+    if update.training:
+        # validated by TrainingConfigUpdate; only the fields sent change
+        for key, value in update.training.model_dump(exclude_none=True).items():
+            setattr(config.settings.training, key, value)
 
-        if update.content and update.content.defaultRating is not None:
-            config.settings.content.defaultRating = update.content.defaultRating
+    if update.content and update.content.defaultRating is not None:
+        config.settings.content.defaultRating = update.content.defaultRating
 
-        if update.language is not None:
-            config.settings.language = update.language
-        
-        config.save_settings(config.settings)
-        
-        return {"success": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if update.language is not None:
+        config.settings.language = update.language
+    
+    config.save_settings(config.settings)
+    
+    return {"success": True}
 
 
 @router.post("/reset")
 async def reset_settings():
-    try:
-        # mutate in place: agent/assets/storyboard/clients hold references
-        # to this object, a rebind would leave them on the old values
-        config.reset_settings_in_place(config.settings)
-        config.save_settings(config.settings)
-        return {"success": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # mutate in place: agent/assets/storyboard/clients hold references
+    # to this object, a rebind would leave them on the old values
+    config.reset_settings_in_place(config.settings)
+    config.save_settings(config.settings)
+    return {"success": True}

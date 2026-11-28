@@ -37,9 +37,9 @@ def client(tmp_path, monkeypatch):
     import backend.api.assets as assets_mod
     import backend.api.render as render_mod
     from backend.render.resolve import make_resolver
-    for mod in (agent_mod, assets_mod, render_mod):
+    for mod in (assets_mod, render_mod):
         monkeypatch.setattr(mod, "asset_store", store)
-    for mod in (agent_mod, render_mod):
+    for mod in (render_mod,):
         monkeypatch.setattr(mod, "_resolver", make_resolver(store))
 
     import backend.api.agent as agent_mod  # noqa: F811
@@ -93,7 +93,7 @@ def test_per_request_model_and_loras_passthrough(client):
     body = r.json()
     assert body["model"] == "qwen_image_2.1_int8_convrot"
     # meta records model + prompt format
-    store = __import__("backend.api.agent", fromlist=["asset_store"]).asset_store
+    store = __import__("backend.storage.asset_store", fromlist=["asset_store"]).asset_store
     meta = store.get(body["assets"][0]["asset_id"])
     assert meta["model"] == "qwen_image_2.1_int8_convrot"
     assert meta["prompt_format"] == "prose"
@@ -133,11 +133,11 @@ def test_character_block_validation(client):
 def test_init_image_passthrough(client):
     c, captured = client
     pid = _mk_project(c)
-    entry = __import__("backend.api.agent", fromlist=["asset_store"]).asset_store \
+    entry = __import__("backend.storage.asset_store", fromlist=["asset_store"]).asset_store \
         .save_dataurl(solid_png((10, 200, 10)))
     r = c.post("/api/agent/generate", json={
         "project_id": pid, "panel_id": "panel_2", "prompt": "edit this",
-        "init_image": __import__("backend.api.agent",
+        "init_image": __import__("backend.storage.asset_store",
                                  fromlist=["asset_store"]).asset_store.url_for(entry["asset_id"]),
         "init_creativity": 0.6, "inject_characters": False})
     assert r.status_code == 200, r.text
@@ -193,10 +193,10 @@ def test_dynamic_corners_applied(client):
     c, _ = client
     pid = _mk_project(c)
     for i in range(1, 5):
-        e = __import__("backend.api.agent", fromlist=["asset_store"]).asset_store \
+        e = __import__("backend.storage.asset_store", fromlist=["asset_store"]).asset_store \
             .save_dataurl(solid_png((10 * i, 50, 90)))
         c.patch(f"/api/agent/projects/{pid}/panels/panel_{i}",
-                json={"image": __import__("backend.api.agent",
+                json={"image": __import__("backend.storage.asset_store",
                                           fromlist=["asset_store"]).asset_store.url_for(e["asset_id"])})
     r = c.post(f"/api/agent/projects/{pid}/pages", json={
         "template": {"kind": "builtin", "id": "manga-4"},

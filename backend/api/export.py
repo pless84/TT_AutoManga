@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ..render.export_service import prune_exports
 from ..render.resolve import ref_to_bytes
-from ..storage.manager import validate_project_id, InvalidProjectIdError
+from ..storage.manager import validate_project_id
 from ..core.config import DATA_DIR
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -35,11 +35,8 @@ def _panel_image_bytes(image: str) -> Optional[bytes]:
 
 
 def _checked_project_id(project_id: str) -> str:
-    # project_id ends up in an export file name
-    try:
-        return validate_project_id(project_id)
-    except InvalidProjectIdError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # project_id ends up in an export file name (an unsafe one: a 400)
+    return validate_project_id(project_id)
 
 
 _IMAGE_FORMATS = {"png", "jpg", "jpeg", "webp"}
@@ -129,10 +126,7 @@ def _export_pdf_sync(req: ExportPDFRequest) -> dict:
 @router.post("/pdf")
 async def export_pdf(req: ExportPDFRequest):
     _checked_project_id(req.project_id)
-    try:
-        return await asyncio.to_thread(_export_pdf_sync, req)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await asyncio.to_thread(_export_pdf_sync, req)
 
 
 def _export_images_sync(req: ExportImagesRequest) -> dict:
@@ -156,10 +150,7 @@ async def export_images(req: ExportImagesRequest):
     if req.format.lower() not in _IMAGE_FORMATS:
         raise HTTPException(status_code=400,
                             detail=f"format must be one of {sorted(_IMAGE_FORMATS)}")
-    try:
-        return await asyncio.to_thread(_export_images_sync, req)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await asyncio.to_thread(_export_images_sync, req)
 
 
 def _export_composer_pdf_sync(req: ComposerExportRequest) -> dict:
@@ -198,10 +189,7 @@ def _export_composer_pdf_sync(req: ComposerExportRequest) -> dict:
 
 @router.post("/composer-pdf")
 async def export_composer_pdf(req: ComposerExportRequest):
-    try:
-        return await asyncio.to_thread(_export_composer_pdf_sync, req)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await asyncio.to_thread(_export_composer_pdf_sync, req)
 
 
 def _export_composer_images_sync(req: ComposerExportRequest) -> dict:
@@ -222,10 +210,7 @@ def _export_composer_images_sync(req: ComposerExportRequest) -> dict:
 
 @router.post("/composer-images")
 async def export_composer_images(req: ComposerExportRequest):
-    try:
-        return await asyncio.to_thread(_export_composer_images_sync, req)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await asyncio.to_thread(_export_composer_images_sync, req)
 
 
 @router.get("/download/{filename}")
