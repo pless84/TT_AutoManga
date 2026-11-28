@@ -178,6 +178,8 @@ async def lifespan(app: FastAPI):
     # Disk-touching maintenance runs at server startup, not at import time,
     # so importing the app (tests, CLI helpers) never deletes files.
     import threading
+    from .storage.manager import storage
+    storage.migrate_flat_project_file()   # before anything lists projects
     threading.Thread(target=_maybe_cleanup_orphan_assets,
                      name="orphan-asset-cleanup", daemon=True).start()
     # a batch AI rewrite the last server left running carries on

@@ -204,7 +204,7 @@ Settings live in `data/settings.json` (gitignored, created on first change):
 | Layer | Tech |
 |---|---|
 | Frontend | React 19, TypeScript, Vite, Zustand, framer-motion, @dnd-kit |
-| Backend | FastAPI, pydantic v2, httpx, openai |
+| Backend | FastAPI, pydantic v2, httpx (OpenAI-compatible LLM calls) |
 | Renderer | Pillow (server-side page renderer with native vertical typesetting) |
 | Export | ReportLab (PDF), Pillow / ZIP |
 | Upscale | ONNX Runtime (Real-ESRGAN) |

@@ -89,7 +89,9 @@ class StorageManager:
             StorageManager.save_project(project)
 
     @staticmethod
-    def _migrate_flat_project_file() -> None:
+    def migrate_flat_project_file() -> None:
+        """One-shot startup step (backend/main.py lifespan): a pre-folder
+        ``projects/project.json`` moves into ``projects/<id>/project.json``."""
         flat_file = PROJECTS_DIR / "project.json"
         if flat_file.exists():
             try:
@@ -112,7 +114,6 @@ class StorageManager:
         size, so a listing only re-reads projects that changed. The returned
         dicts are shared with the cache: treat them as read-only (load_project
         returns a private copy for editing)."""
-        StorageManager._migrate_flat_project_file()
         projects = []
         seen = set()
         for proj_dir in PROJECTS_DIR.iterdir():
