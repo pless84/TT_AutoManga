@@ -1,15 +1,7 @@
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { FiHelpCircle } from 'react-icons/fi';
 import { Sidebar } from './components/layout/Sidebar';
-import { StoryboardTab } from './components/storyboard/StoryboardTab';
-import { PromptLabTab } from './components/prompt/PromptLabTab';
-import { AssetTab } from './components/assets/AssetTab';
-import { ComposerTab } from './components/composer/ComposerTab';
-import { ShowcaseTab } from './components/showcase/ShowcaseTab';
-import { SettingsTab } from './components/settings/SettingsTab';
-import { CharacterTab } from './components/characters/CharacterTab';
-import { ComicsTab } from './components/comics/ComicsTab';
-import { WizardTab } from './components/wizard/WizardTab';
+import { TABS } from './tabs';
 import { Tour } from './components/tour/Tour';
 import { hasTour, isSeen } from './components/tour/tourLogic';
 import { TooltipLayer } from './components/tooltip/TooltipLayer';
@@ -62,30 +54,7 @@ function App() {
       .catch(console.error);
   }, [setSettings]);
 
-  const renderTab = () => {
-    switch (activeTab) {
-      case 'wizard':
-        return <WizardTab />;
-      case 'storyboard':
-        return <StoryboardTab />;
-      case 'prompt':
-        return <PromptLabTab />;
-      case 'assets':
-        return <AssetTab />;
-      case 'composer':
-        return <ComposerTab />;
-      case 'showcase':
-        return <ShowcaseTab />;
-      case 'settings':
-        return <SettingsTab />;
-      case 'characters':
-        return <CharacterTab />;
-      case 'comics':
-        return <ComicsTab />;
-      default:
-        return <StoryboardTab />;
-    }
-  };
+  const Tab = TABS[activeTab] ?? TABS.storyboard;
 
   const title = t.tabs[activeTab];
   const descriptions: Record<string, string> = {
@@ -120,7 +89,9 @@ function App() {
           </div>
         </header>
         <div className="content-body animate-fadeIn" key={activeTab}>
-          {renderTab()}
+          <Suspense fallback={<div className="tab-loading" aria-busy="true"><span className="loading-spinner" /></div>}>
+            <Tab />
+          </Suspense>
         </div>
       </main>
       <TooltipLayer />

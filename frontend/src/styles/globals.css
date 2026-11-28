@@ -436,6 +436,13 @@ body {
   }
 }
 
+/* a tab's code chunk is loading (App's Suspense fallback) */
+.tab-loading {
+  display: flex;
+  justify-content: center;
+  padding: 48px 0;
+}
+
 .empty-state {
   display: flex;
   flex-direction: column;
