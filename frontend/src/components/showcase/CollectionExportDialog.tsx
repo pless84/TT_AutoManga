@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { usePoll } from '../../hooks/usePoll';
 import { FiDownload, FiX } from 'react-icons/fi';
 import { fill, useTranslation } from '../../hooks/useTranslation';
 import { useTips } from '../../hooks/useTips';
@@ -31,21 +32,16 @@ export function CollectionExportDialog({ collection, onClose }: {
   const jobId = job?.status === 'running' ? job.id : null;
 
   // poll the running job once a second
-  useEffect(() => {
-    if (!jobId) return;
-    let cancelled = false;
-    const timer = window.setInterval(async () => {
-      try {
-        const r = await fetch(`/api/collections/exports/${jobId}`);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const data = (await r.json()) as CollectionExportJob;
-        if (!cancelled) setJob(data);
-      } catch (e) {
-        if (!cancelled) setError(String(e));
-      }
-    }, 1000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [jobId]);
+  usePoll(async (signal) => {
+    try {
+      const r = await fetch(`/api/collections/exports/${jobId}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = (await r.json()) as CollectionExportJob;
+      if (!signal.aborted) setJob(data);
+    } catch (e) {
+      if (!signal.aborted) setError(String(e));
+    }
+  }, 1000, { enabled: !!jobId });
 
   const start = async () => {
     setStarting(true);

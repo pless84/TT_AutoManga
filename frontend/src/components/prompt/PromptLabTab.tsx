@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { FiRefreshCw, FiCopy, FiCheck, FiZap, FiTag, FiShuffle, FiUpload } from 'react-icons/fi';
 import { useProjectStore } from '../../store/projectStore';
 import { useTips } from '../../hooks/useTips';
+import { usePoll } from '../../hooks/usePoll';
 import { useTranslation, fill } from '../../hooks/useTranslation';
 import type { Panel } from '../../types';
 import { tagsText } from './promptTags';
@@ -39,7 +40,7 @@ export function PromptLabTab() {
   const [generatingSeconds, setGeneratingSeconds] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
   const [copied, setCopied] = useState(false);
-  const timerRef = useRef<number | null>(null);
+  const startedRef = useRef(0);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [importJson, setImportJson] = useState('');
   const [importCopied, setImportCopied] = useState(false);
@@ -112,20 +113,14 @@ export function PromptLabTab() {
     alert(t.prompt.importSuccess?.replace('{n}', String(imported)) || `Imported ${imported} panel(s).`);
   };
 
-  const stopTimer = () => {
-    if (timerRef.current !== null) {
-      window.clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-  };
-
+  // the "generating for N s" counter: elapsed since the start, so a paused
+  // poll (hidden tab) catches up instead of losing seconds
   const startTimer = () => {
     setGeneratingSeconds(0);
-    stopTimer();
-    timerRef.current = window.setInterval(() => {
-      setGeneratingSeconds((s) => s + 1);
-    }, 1000);
+    startedRef.current = Date.now();
   };
+  usePoll(() => setGeneratingSeconds(Math.floor((Date.now() - startedRef.current) / 1000)), 1000,
+    { enabled: isGenerating });
 
   const handleGenerate = async () => {
     if (!inputText.trim()) return;
@@ -180,7 +175,6 @@ export function PromptLabTab() {
       console.error('Enhancement failed:', error);
       setErrorMessage(fill(t.prompt.networkError, { error: toErrorMessage(error) }));
     } finally {
-      stopTimer();
       setIsGenerating(false);
     }
   };
@@ -247,7 +241,6 @@ export function PromptLabTab() {
       console.error('Batch enhancement failed:', error);
       setErrorMessage(fill(t.prompt.networkError, { error: toErrorMessage(error) }));
     } finally {
-      stopTimer();
       setIsGenerating(false);
     }
   };
@@ -258,12 +251,6 @@ export function PromptLabTab() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  useEffect(() => {
-    return () => {
-      stopTimer();
-    };
-     
-  }, []);
 
   return (
     <div className="prompt-lab-tab">
