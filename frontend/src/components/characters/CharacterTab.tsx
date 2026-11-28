@@ -126,7 +126,7 @@ export function CharacterTab() {
           if (extracted.length > 0) setCharacters(extracted);
         }
       });
-  }, []);
+  }, [setCharacters, extractCharactersFromPanels]);   // store actions: stable, so once on open
 
   useEffect(() => {
     if (!isEditing) return;

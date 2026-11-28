@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useEffectEvent, useRef } from 'react';
 import { FiGrid, FiPlus, FiTrash2, FiFolder, FiEye, FiEdit2, FiChevronLeft, FiChevronRight, FiDownload, FiLayers } from 'react-icons/fi';
 import { useProjectStore } from '../../store/projectStore';
 import { useExportScale } from '../../hooks/useExportScale';
@@ -113,11 +113,13 @@ export function ShowcaseTab() {
     loadProjects();
   }, []);
 
+  const projectIds = JSON.stringify(projects.map(p => p.id));
+  const reloadProjects = useEffectEvent(() => { loadProjects(); });
   useEffect(() => {
     if (mode === 'browse') {
-      loadProjects();
+      reloadProjects();
     }
-  }, [mode, JSON.stringify(projects.map(p => p.id))]);
+  }, [mode, projectIds]);
 
   const handleLoadProject = async (projectId: string, action: 'view' | 'edit' = 'view') => {
     const seq = ++loadSeqRef.current;
@@ -543,14 +545,15 @@ function ComicReader({ project, page, onPageChange, onBack, onEdit }: {
   const prev = () => { if (page > 0) onPageChange(page - 1); };
   const next = () => { if (page < total - 1) onPageChange(page + 1); };
 
+  const onKey = useEffectEvent((e: KeyboardEvent) => {
+    if (e.key === 'ArrowLeft') prev();
+    if (e.key === 'ArrowRight') next();
+  });
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft') prev();
-      if (e.key === 'ArrowRight') next();
-    };
+    const handler = (e: KeyboardEvent) => onKey(e);
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [page, total]);
+  }, []);
 
   return (
     <div className="comic-reader">
