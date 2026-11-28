@@ -22,6 +22,7 @@ from ..render.resolve import make_resolver
 from ..storage import collections as store
 from ..storage.asset_store import asset_store
 from ..storage.manager import storage, InvalidProjectIdError
+from .export_options import ExportOptionsMixin
 from .project import project_cover_src
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,7 @@ async def get_export(job_id: str):
         return _job_view(job)
 
 
-class CollectionExportRequest(BaseModel):
+class CollectionExportRequest(ExportOptionsMixin):
     format: str = "pdf"             # pdf | zip | both
     scale: float = 2.0
     pageNumbers: bool = False       # continuous across the collection, cover exempt
@@ -136,7 +137,7 @@ class CollectionExportRequest(BaseModel):
 
 
 def _run_export(job: Dict[str, Any], col: Dict[str, Any], episodes, req: CollectionExportRequest,
-                scale: float, base_name: str) -> None:
+                scale: float, base_name: str, opts) -> None:
     def progress(done: int, total: int) -> None:
         with _jobs_lock:
             job["done"], job["total"] = done, total
@@ -145,7 +146,7 @@ def _run_export(job: Dict[str, Any], col: Dict[str, Any], episodes, req: Collect
             col, episodes, req.format, scale, _resolver, _exports_dir(), base_name,
             page_numbers=req.pageNumbers,
             episode_title_pages=req.episodeTitlePages,
-            cover=req.cover, progress=progress)
+            cover=req.cover, progress=progress, opts=opts)
         with _jobs_lock:
             job["status"] = "done"
             job["done"] = result["pages"]
@@ -181,6 +182,7 @@ async def export_collection(collection_id: str, req: CollectionExportRequest):
         raise HTTPException(status_code=400,
                             detail="collection has no episodes with pages to export")
     scale = min(8.0, max(0.5, req.scale))   # same bounds as /api/agent/export
+    opts = req.export_options()
     with _jobs_lock:
         if any(j["status"] == "running" for j in _jobs.values()):
             return JSONResponse(status_code=409, content={
@@ -198,7 +200,7 @@ async def export_collection(collection_id: str, req: CollectionExportRequest):
                "format": req.format, "createdAt": time.time(), "finishedAt": None}
         _jobs[job["id"]] = job
     threading.Thread(target=_run_export, name=f"collection-export-{job['id'][:8]}",
-                     args=(job, col, episodes, req, scale, base_name),
+                     args=(job, col, episodes, req, scale, base_name, opts),
                      daemon=True).start()
     logger.info("collection export %s started: collection=%s fmt=%s pages=%d",
                 job["id"], col["id"], req.format, job["total"])

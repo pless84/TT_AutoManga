@@ -319,14 +319,28 @@ async def render_preview(project_id: str, page_id: str,
                        params={"scale": scale}, raw=True)
 
 
+def _export_opts(image_format: str, quality: int,
+                 dpi: Optional[float]) -> Dict[str, Any]:
+    opts: Dict[str, Any] = {"imageFormat": image_format, "quality": quality}
+    if dpi is not None:
+        opts["dpi"] = dpi
+    return opts
+
+
 async def export_project(project_id: str, format: str = "both",
                          scale: float = 2.0,
-                         page_numbers: bool = False) -> Dict[str, Any]:
+                         page_numbers: bool = False,
+                         image_format: str = "jpeg", quality: int = 85,
+                         dpi: Optional[float] = None) -> Dict[str, Any]:
     """Export all pages (pdf|zip|both; page_numbers stamps every page but
-    the first). Returns local paths + same-origin download URLs."""
+    the first). PDF page images are JPEG (quality 1-100) unless
+    image_format="png" (lossless, ~5-10x larger); dpi renders every page to
+    that resolution at 6.625 in wide instead of using scale. Returns local
+    paths + same-origin download URLs."""
     return await _call("POST", "/api/agent/export",
                        json={"project_id": project_id, "format": format,
-                             "scale": scale, "page_numbers": page_numbers})
+                             "scale": scale, "page_numbers": page_numbers,
+                             **_export_opts(image_format, quality, dpi)})
 
 
 # ------------------------------------------------------------------ collections
@@ -341,17 +355,21 @@ async def export_collection(collection_id: str, format: str = "pdf",
                             scale: float = 2.0, page_numbers: bool = False,
                             episode_title_pages: bool = True,
                             cover: bool = False,
+                            image_format: str = "jpeg", quality: int = 85,
+                            dpi: Optional[float] = None,
                             poll_interval: float = 1.0,
                             timeout: float = 1800.0) -> Dict[str, Any]:
     """Export a whole collection (pdf|zip|both) as one file: optional
     generated cover, a title page before each episode, page numbers
-    continuous across episodes. Starts the background job and waits for it;
+    continuous across episodes. image_format/quality/dpi as in
+    export_project. Starts the background job and waits for it;
     returns the finished job (status, done/total, pdf/zip download URLs)."""
     job = await _call("POST", f"/api/collections/{collection_id}/export",
                       json={"format": format, "scale": scale,
                             "pageNumbers": page_numbers,
                             "episodeTitlePages": episode_title_pages,
-                            "cover": cover})
+                            "cover": cover,
+                            **_export_opts(image_format, quality, dpi)})
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while job.get("status") == "running":
